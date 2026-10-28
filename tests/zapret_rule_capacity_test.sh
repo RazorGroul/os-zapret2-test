@@ -22,12 +22,12 @@ chmod +x "${fake_ipfw}"
 
 RULE_BASE=19000
 RULE_MAX=19010
-helpers=$(sed -n '/^validate_ipfw_rule_capacity()/,/^start_service()/p' \
+helpers=$(sed -n '/^validate_udp_configuration()/,/^start_service()/p' \
     "${service}" | sed '$d' | sed "s#/sbin/ipfw#${fake_ipfw}#g")
 eval "${helpers}"
 
-# install_ipfw_rules() calls the real cleanup helper before adding anything.
-# The fake ipfw log starts empty, so no cleanup is needed in this test.
+# install_ipfw_rules normally clears its reserved range; the fake log has no
+# external rules, so make cleanup a no-op for these isolated command tests.
 remove_ipfw_rules()
 {
     :
@@ -35,6 +35,9 @@ remove_ipfw_rules()
 
 SOURCE_NETS=""
 DIVERT_PORT=989
+UDP_PORTS=""
+UDP_FILTER_L7=""
+UDP_ARGS=""
 
 PORTS="1,2,3,4,5,6,7,8,9,10,11"
 QUIC_ARGS=""
@@ -54,7 +57,6 @@ if install_ipfw_rules igc0 2>/dev/null; then
     echo 'oversized TCP plus QUIC rule layout was accepted' >&2
     exit 1
 fi
-
 test ! -s "${ipfw_log}"
 
 PORTS="1,2,3,4,5,6,7,8,9,10,11,12"
@@ -64,4 +66,58 @@ if validate_ipfw_rule_capacity 2>/dev/null; then
     exit 1
 fi
 
-echo 'zapret ipfw rule capacity tests: ok'
+# A custom UDP profile consumes one firewall rule regardless of the number
+# of comma-separated UDP ports/ranges. Inputs are whitespace/zero normalized.
+PORTS="1,2,3,4,5,6,7,8,9"
+QUIC_ARGS="--payload=quic_initial"
+UDP_PORTS=" 019294 - 019344, 50000-50100 "
+UDP_FILTER_L7="Discord,STUN"
+UDP_ARGS="--payload=stun --lua-desync=fake:repeats=6"
+install_ipfw_rules igc0
+grep -qF 'add 19010 divert 989 udp from any to any 19294-19344,50000-50100 out not diverted not sockarg xmit igc0' "${ipfw_log}"
+test "${UDP_PORTS}" = "19294-19344,50000-50100"
+test "${UDP_FILTER_L7}" = "discord,stun"
+
+# Reserved rule-range exhaustion accounts for TCP, QUIC and custom UDP.
+: > "${ipfw_log}"
+PORTS="1,2,3,4,5,6,7,8,9,10"
+QUIC_ARGS="--payload=quic_initial"
+UDP_PORTS="19294-19344"
+UDP_FILTER_L7="discord,stun"
+UDP_ARGS="--payload=stun --lua-desync=fake:repeats=6"
+if install_ipfw_rules igc0 2>/dev/null; then
+    echo 'oversized TCP + QUIC + custom UDP layout was accepted' >&2
+    exit 1
+fi
+test ! -s "${ipfw_log}"
+
+expect_udp_invalid() {
+    UDP_PORTS="$1"
+    UDP_FILTER_L7="$2"
+    UDP_ARGS="$3"
+    QUIC_ARGS="$4"
+    if validate_udp_configuration 2>/dev/null; then
+        echo "invalid UDP settings unexpectedly accepted: ports=$1 l7=$2 args=$3 quic=$4" >&2
+        exit 1
+    fi
+}
+expect_udp_invalid "0" "discord,stun" "--lua-desync=fake" ""
+expect_udp_invalid "65536" "discord,stun" "--lua-desync=fake" ""
+expect_udp_invalid "19344-19294" "discord,stun" "--lua-desync=fake" ""
+expect_udp_invalid "19294,,19344" "discord,stun" "--lua-desync=fake" ""
+expect_udp_invalid "443" "quic" "--lua-desync=fake" "--payload=quic_initial"
+expect_udp_invalid "19294-19344" "madeup" "--lua-desync=fake" ""
+expect_udp_invalid "19294-19344" "discord,stun" "--lua-desync=fake;touch" ""
+expect_udp_invalid "" "discord,stun" "--lua-desync=fake" ""
+expect_udp_invalid "19294-19344" "discord,stun" "" ""
+
+# FreeBSD ipfw limits a single comma-separated port list to 30 entries.
+long_list="1"
+i=2
+while [ "$i" -le 31 ]; do
+    long_list="${long_list},${i}"
+    i=$((i + 1))
+done
+expect_udp_invalid "$long_list" "discord" "--lua-desync=fake" ""
+
+echo 'zapret ipfw and UDP profile tests: ok'
