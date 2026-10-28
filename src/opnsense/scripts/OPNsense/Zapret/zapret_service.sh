@@ -366,8 +366,8 @@ validate_udp_configuration() {
         case "${end}" in ''|*[!0-9]*) IFS="${saved_ifs}"; echo "invalid UDP port: ${item}" >&2; return 1 ;; esac
 
         # Strip leading zeroes before numeric comparisons to avoid octal arithmetic.
-        start=$(printf '%s' "${start}" | sed 's/^0*//')
-        end=$(printf '%s' "${end}" | sed 's/^0*//')
+        while [ -n "${start}" ] && [ "${start#0}" != "${start}" ]; do start="${start#0}"; done
+        while [ -n "${end}" ] && [ "${end#0}" != "${end}" ]; do end="${end#0}"; done
         [ -n "${start}" ] || start=0
         [ -n "${end}" ] || end=0
 
@@ -452,7 +452,7 @@ validate_tcp_ports() {
                 ;;
         esac
 
-        item=$(printf '%s' "${item}" | sed 's/^0*//')
+        while [ -n "${item}" ] && [ "${item#0}" != "${item}" ]; do item="${item#0}"; done
         [ -n "${item}" ] || item=0
         # Guard before test(1): very long numeric strings can make integer
         # comparisons fail with an error and otherwise bypass range checks.
