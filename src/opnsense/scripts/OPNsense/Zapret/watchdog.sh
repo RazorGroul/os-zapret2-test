@@ -12,6 +12,7 @@
 
 ZAPRET_DIR="/usr/local/etc/zapret2"
 CONFIG="${ZAPRET_DIR}/zapret.conf"
+CONFIG_VALIDATOR="/usr/local/opnsense/scripts/OPNsense/Zapret/validate_config.sh"
 PIDFILE="/var/run/dvtws2.pid"
 STATE="/var/run/zapret-watchdog.state"
 
@@ -33,6 +34,10 @@ log() {
 
 # Bail if config not present or service disabled
 [ ! -f "${CONFIG}" ] && exit 0
+if [ ! -r "${CONFIG_VALIDATOR}" ] || ! /bin/sh "${CONFIG_VALIDATOR}" "${CONFIG}"; then
+    log "refusing to source invalid or unsafe zapret.conf"
+    exit 0
+fi
 . "${CONFIG}"
 [ "${ZAPRET_ENABLED}" != "1" ] && exit 0
 
