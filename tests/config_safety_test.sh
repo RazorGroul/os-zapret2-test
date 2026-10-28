@@ -21,7 +21,6 @@ safe_source()
 cat > "${test_root}/valid.conf" <<'EOF'
 # generated configuration
 ZAPRET_ENABLED="1"
-ZAPRET_ENABLED="1"
 WAN_IF="igc0"
 DIVERT_PORT="989"
 PORTS="80,443"
