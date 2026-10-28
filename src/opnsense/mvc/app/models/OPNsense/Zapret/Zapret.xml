@@ -124,6 +124,14 @@
             </excludefile>
         </ipset>
         <hostlist>
+            <uselegacydomains type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </uselegacydomains>
+            <uselegacyexcludes type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </uselegacyexcludes>
             <mode type="OptionField">
                 <Default>all</Default>
                 <OptionValues>
@@ -135,11 +143,11 @@
             </mode>
             <domains type="TextField">
                 <Required>N</Required>
-                <Mask>/^[a-zA-Z0-9\.\-\n\r\s]*$/</Mask>
+                <Mask>/^[a-zA-Z0-9\.\-\^\n\r\s]*$/</Mask>
             </domains>
             <excludedomains type="TextField">
                 <Required>N</Required>
-                <Mask>/^[a-zA-Z0-9\.\-\n\r\s]*$/</Mask>
+                <Mask>/^[a-zA-Z0-9\.\-\^\n\r\s]*$/</Mask>
             </excludedomains>
         </hostlist>
     </items>
