@@ -107,6 +107,50 @@ Managed-profile strategy fields accept verified `--payload=...`, `--lua-desync=.
 
 The bundled YouTube/Google and Discord lists are based on the supplied legacy lists. Two separate checkboxes optionally import the supplied general and exclusion domain lists into the generic hostlist templates. Both are off by default, so the old generic hostlist behavior does not change unless enabled. Extra domain fields append entries to the corresponding managed service list.
 
+## Custom profiles (advanced)
+
+Settings includes an optional JSON editor for up to eight custom zapret2 profiles. Leave the value as `[]` to keep the existing built-in profile behavior. Profiles are applied in ascending `order`, before the named YouTube/Google and Discord profiles and before the generic fallbacks. The service validates the complete JSON document and profile fields before adding interception rules; the JSON is rendered to a separate file and is never sourced as shell configuration.
+
+Example:
+
+```json
+[
+  {
+    "enabled": true,
+    "name": "discord-voice",
+    "order": 10,
+    "transport": "udp",
+    "ports": "19294-19344,50000-50100",
+    "l7": ["discord", "stun"],
+    "domains": [],
+    "exclude_domains": [],
+    "ipset": "inherit",
+    "strategy": "--payload=stun,discord_ip_discovery --lua-desync=fake:blob=fake_default_quic:repeats=6"
+  },
+  {
+    "enabled": true,
+    "name": "private-tls",
+    "order": 20,
+    "transport": "tcp",
+    "ports": "443,8443",
+    "l7": ["tls"],
+    "domains": ["example.com", "^exact.example"],
+    "exclude_domains": ["bank.example"],
+    "ipset": "inherit",
+    "strategy": "--payload=tls_client_hello --lua-desync=fake:repeats=2"
+  }
+]
+```
+
+- `enabled` is a JSON boolean; `name` contains only letters, numbers, hyphens, or underscores. Names and integer `order` values must be unique. At most eight profile objects and 64 KiB of JSON are accepted.
+- `transport` is `tcp` or `udp`. `ports` accepts comma-separated numbers/ranges from 1 to 65535, with ascending ranges and at most 30 entries per profile. Enabled TCP profile ports are added to the interception rules. All built-in and custom UDP ports are combined into one validated WAN-scoped divert rule, while the dvtws2 profiles retain their own filters.
+- `l7` is an array of protocol names. TCP accepts `http`, `tls`, or `unknown`; UDP accepts `quic`, `wireguard`, `dht`, `discord`, `stun`, or `unknown`.
+- `domains` and `exclude_domains` are optional hostname arrays. They are allowed for TCP profiles and pure-QUIC UDP profiles only. Non-QUIC UDP flows usually cannot provide a hostname, so use IPSet filters to scope Discord Voice/STUN or other UDP profiles.
+- `ipset` defaults to `inherit`; other values are `none`, `include`, `exclude`, or `both`. Selecting `include`, `exclude`, or `both` requires the corresponding global IPSet filter to be enabled and validated.
+- `strategy` accepts only verified `--payload=...`, `--lua-desync=...`, and optional `--out-range=...` tokens. Do not use classic zapret flags, arbitrary dvtws2 flags, file paths, shell operators, quotes, or command substitutions.
+
+Custom domain and exclusion lists are written only to the plugin-owned `/usr/local/etc/zapret2/custom-hostlists/` directory. Service stop removes these generated files. The UDP interception list is aggregated to one ipfw rule; the overall TCP rule count still must fit the plugin's reserved rule range `19000–19010`. Test custom strategies on a non-critical firewall before production use.
+
 The legacy IPSet include list is not bundled automatically. The active `ipset-all.txt` supplied in the old configuration contained only `203.0.113.113/32`, a documentation-only address, so it must **not** be used as the active include list. Copy the valid `ipset-all.txt.backup` to `/usr/local/etc/zapret2/ipset-all.txt` on OPNsense before enabling the include filter. The service validates its CIDR syntax before applying it. The legacy exclude IPSet can be uploaded separately and selected by filename; otherwise the bundled local/private-range exclusion file is available.
 
 ## Quick start
