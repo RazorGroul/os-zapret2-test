@@ -408,6 +408,18 @@ validate_udp_configuration() {
     done
     IFS="${saved_ifs}"
 
+    # Discord voice packets do not carry a TLS hostname. When the selected
+    # L7 filter includes Discord, use the dedicated Discord domain list so
+    # user-defined generic hostlist mode cannot accidentally suppress voice.
+    case ",${UDP_FILTER_L7}," in
+        *,discord,*)
+            if [ ! -s "${DISCORD_HOSTLIST}" ]; then
+                echo "Discord hostlist is missing or empty: ${DISCORD_HOSTLIST}" >&2
+                return 1
+            fi
+            ;;
+    esac
+
     validate_strategy_arguments "Additional UDP" "${UDP_ARGS}" || return 1
 
     UDP_PORTS="${normalized_ports}"
@@ -751,7 +763,11 @@ start_service() {
     # Additional UDP profile, for example Discord voice, is independent of
     # UDP/443 unless explicitly configured to overlap it (which is rejected).
     if [ -n "${UDP_PORTS}" ]; then
-        args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${hostlist_noauto_args}${IPSET_ARGS} ${UDP_ARGS}"
+        local udp_hostlist_args="${hostlist_noauto_args}"
+        case ",${UDP_FILTER_L7}," in
+            *,discord,*) udp_hostlist_args=" --hostlist=${DISCORD_HOSTLIST}${hostlist_exclude_args}" ;;
+        esac
+        args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${udp_hostlist_args}${IPSET_ARGS} ${UDP_ARGS}"
     fi
 
     [ -n "${EXTRA_ARGS}" ] && args="${args} ${EXTRA_ARGS}"
