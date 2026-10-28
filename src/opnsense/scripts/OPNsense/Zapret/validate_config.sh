@@ -53,8 +53,9 @@ function allowed(name) {
     # The template wraps values in double quotes. Inside those quotes, dollar
     # signs, backticks and backslashes can change shell evaluation; a double
     # quote or newline already fails the assignment grammar above.
-    if (index(value, "$") || index(value, sprintf("%c", 96)) || index(value, sprintf("%c", 92))) {
-        fail("unsafe shell expansion character in " name)
+    if (index(value, "$") || index(value, sprintf("%c", 96)) || index(value, sprintf("%c", 92)) ||
+        index(value, "*") || index(value, "?") || index(value, "[") || index(value, "]")) {
+        fail("unsafe shell expansion or glob character in " name)
     }
 
     seen[name] = 1
