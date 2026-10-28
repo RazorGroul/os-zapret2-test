@@ -23,36 +23,34 @@ This plugin packages [bol-van/zapret2](https://github.com/bol-van/zapret2) into 
 - Any WAN type — PPPoE, DHCP, static, all work.
 - The plugin's `setup.sh` will install `luajit`, `jq`, `git-lite` or `git`, and `pkgconf` from FreeBSD's main repo and compile `dvtws2`. Internet access required for the one-time setup.
 
-## Installation
+## Installation (development branch)
 
-Releases ship as a real FreeBSD `.pkg`. Install with `pkg add` — OPNsense registers it like any other plugin.
+`feature/udp-port-interception` is an unreleased development branch of this fork. Do not use the upstream project's `releases/latest` URL to test these changes: that installs an upstream package without the new profiles. Build the fork on a FreeBSD host or VM and match the target OPNsense FreeBSD major version (FreeBSD 15 for OPNsense 26.7+, FreeBSD 14 for OPNsense 26.1–26.4).
+
+### Build the package
 
 ```sh
-# On the OPNsense firewall (SSH as root)
-
-# Use -freebsd15 instead of -freebsd14 on OPNsense 26.7+ (uname -r says 15.x)
-fetch -o /tmp/os-zapret2.pkg \
-    https://github.com/ugorur/os-zapret2/releases/latest/download/os-zapret2-1.8.1-freebsd14.pkg
-# (asset filename tracks PLUGIN_VERSION_PLUGIN_REVISION from Makefile — check the
-#  Releases page for the current version if the URL above 404s)
-
-pkg add /tmp/os-zapret2.pkg
-
-# Bootstrap dependencies and compile dvtws2 (~1 minute, one-time)
-/usr/local/opnsense/scripts/OPNsense/Zapret/setup.sh
+git clone --branch feature/udp-port-interception https://github.com/RazorGroul/os-zapret2-test.git
+cd os-zapret2-test
+pkg install -y jq
+sh scripts/build-pkg.sh
+# FreeBSD 15 output: dist/os-zapret2-1.9.0-freebsd15.pkg
+# FreeBSD 14 output: dist/os-zapret2-1.9.0-freebsd14.pkg
 ```
 
-> **Why `setup.sh` instead of dependencies?** OPNsense's pkg repository doesn't carry `luajit` / `jq` (those live in FreeBSD's main repo, which OPNsense ships disabled by default). `setup.sh` enables that repo for the duration of the install, fetches the deps, then restores the original repo state. The `.pkg` itself stays clean and rapid to install.
+The build runs on FreeBSD (CI uses a FreeBSD VM), stages the plugin, builds the private HTTP/3 curl client and creates a real `.pkg`. The package filename records the FreeBSD major so `pkg` will not accidentally install a package built for a different major version.
 
-After setup, navigate to **Services → Zapret DPI Bypass → Settings** in the GUI.
+### Install only on a test OPNsense instance
 
-Verify the install:
+Copy the matching package to a non-critical OPNsense test instance, then run as root:
 
 ```sh
+pkg add /tmp/os-zapret2-1.9.0-freebsd15.pkg
+/usr/local/opnsense/scripts/OPNsense/Zapret/setup.sh
 pkg info os-zapret2
 ```
 
-The plugin will also appear in **Firmware → Plugins** (as `os-zapret2`) and **System → Services** (as `Zapret2 DPI Bypass`) with start/stop controls.
+Replace the package filename with the artifact built for the target's FreeBSD major. After setup, open **Services → Zapret DPI Bypass → Settings**. Do not install this draft on a production firewall until the CI/build and runtime checks are complete.
 
 ### Uninstall
 
@@ -60,18 +58,7 @@ The plugin will also appear in **Firmware → Plugins** (as `os-zapret2`) and **
 pkg delete os-zapret2
 ```
 
-`+PRE_DEINSTALL` cleanly stops the service and removes ipfw divert rules before files are deleted. Saved settings in `config.xml` are preserved — reinstalling later picks them up.
-
-### Build from source
-
-```sh
-# On a FreeBSD 14 host (or in a FreeBSD VM — CI uses vmactions/freebsd-vm)
-git clone https://github.com/ugorur/os-zapret2.git
-cd os-zapret2
-pkg install -y jq
-sh scripts/build-pkg.sh
-# Output: dist/os-zapret2-<version>.pkg
-```
+The package pre-deinstall script stops the service and removes its reserved `ipfw divert` rules. OPNsense settings stored in `config.xml` are preserved.
 
 ## Additional UDP profile
 
