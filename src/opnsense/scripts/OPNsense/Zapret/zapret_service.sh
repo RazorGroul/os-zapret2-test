@@ -210,6 +210,7 @@ validate_strategy_arguments() {
     local value="$2"
     local saved_ifs="${IFS}"
     local token
+    local saw_desync=0
 
     if [ -z "${value}" ]; then
         echo "${profile} strategy is empty" >&2
@@ -237,9 +238,12 @@ validate_strategy_arguments() {
                 [ -n "${token#--lua-desync=}" ] || { IFS="${saved_ifs}"; echo "empty --lua-desync value in ${profile} strategy" >&2; return 1; }
                 saw_desync=1
                 ;;
+            --out-range=*)
+                [ -n "${token#--out-range=}" ] || { IFS="${saved_ifs}"; echo "empty --out-range value in ${profile} strategy" >&2; return 1; }
+                ;;
             *)
                 IFS="${saved_ifs}"
-                echo "${profile} strategy accepts only --payload=... and --lua-desync=... arguments; rejected token: ${token}" >&2
+                echo "${profile} strategy accepts only --payload=..., --lua-desync=..., and --out-range=... arguments; rejected token: ${token}" >&2
                 return 1
                 ;;
         esac
@@ -301,7 +305,6 @@ validate_udp_configuration() {
     local includes_443=0
     local saved_ifs="${IFS}"
     local token
-    local saw_desync=0
 
     raw_ports=$(printf '%s' "${raw_ports}" | tr -d '[:space:]')
 
