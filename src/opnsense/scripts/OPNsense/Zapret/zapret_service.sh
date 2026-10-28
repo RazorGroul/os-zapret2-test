@@ -25,6 +25,7 @@
 
 ZAPRET_DIR="/usr/local/etc/zapret2"
 CONFIG="${ZAPRET_DIR}/zapret.conf"
+CONFIG_VALIDATOR="/usr/local/opnsense/scripts/OPNsense/Zapret/validate_config.sh"
 PIDFILE="/var/run/dvtws2.pid"
 SUPERVISOR_PIDFILE="/var/run/dvtws2-supervisor.pid"
 WATCHDOG_PIDFILE="/var/run/zapret-watchdog.pid"
@@ -54,6 +55,10 @@ RULE_MAX=$((RULE_BASE + 10))
 load_config() {
     if [ ! -f "${CONFIG}" ]; then
         echo "zapret is not running (configuration file not found — save settings first)"
+        exit 1
+    fi
+    if [ ! -r "${CONFIG_VALIDATOR}" ] || ! /bin/sh "${CONFIG_VALIDATOR}" "${CONFIG}"; then
+        echo "refusing to source invalid or unsafe zapret.conf; save the plugin settings again after updating the package" >&2
         exit 1
     fi
     . "${CONFIG}"
