@@ -59,6 +59,9 @@ load_config() {
     fi
     if [ ! -r "${CONFIG_VALIDATOR}" ] || ! /bin/sh "${CONFIG_VALIDATOR}" "${CONFIG}"; then
         echo "refusing to source invalid or unsafe zapret.conf; save the plugin settings again after updating the package" >&2
+        # Fail open even when the generated config cannot be trusted: delete
+        # only this plugin's reserved divert rules before returning an error.
+        remove_ipfw_rules
         exit 1
     fi
     . "${CONFIG}"
