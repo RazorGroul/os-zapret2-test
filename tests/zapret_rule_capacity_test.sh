@@ -57,6 +57,45 @@ DISCORD_HOSTLIST="${test_root}/discord-hostlist.txt"
 printf '%s\n' 'youtube.com' > "${YOUTUBE_HOSTLIST}"
 printf '%s\n' 'discord.com' > "${DISCORD_HOSTLIST}"
 
+# Validate TCP ports independently of the firewall: reject malformed and
+# out-of-range values, normalize leading zeroes, and deduplicate repeats.
+PORTS="080,443,443"
+validate_tcp_ports
+test "${PORTS}" = "80,443"
+for invalid_ports in "0" "65536" "80,,443" "80," "abc"; do
+    PORTS="${invalid_ports}"
+    if validate_tcp_ports >/dev/null 2>&1; then
+        echo "invalid TCP port list unexpectedly accepted: ${invalid_ports}" >&2
+        exit 1
+    fi
+done
+PORTS="80,443"
+
+# The managed YouTube TCP profile must cause TCP/443 to be intercepted even
+# when the generic Ports field contains only port 80.
+PORTS="80"
+YOUTUBE_TCP_ENABLED="1"
+YOUTUBE_TCP_ARGS="--payload=tls_client_hello --lua-desync=fake:repeats=2 --out-range=-d10"
+validate_ipfw_rule_capacity
+test "${TCP_INTERCEPT_PORTS}" = "80,443"
+YOUTUBE_TCP_ENABLED="0"
+YOUTUBE_TCP_ARGS=""
+PORTS="80,443"
+
+# A YouTube-only QUIC strategy still needs the shared UDP/443 divert rule even
+# when the generic QUIC strategy is left empty.
+PORTS="80"
+YOUTUBE_QUIC_ENABLED="1"
+YOUTUBE_QUIC_ARGS="--payload=quic_initial --lua-desync=fake:repeats=2"
+QUIC_ARGS=""
+validate_ipfw_rule_capacity
+install_ipfw_rules igc0
+grep -qF 'add 19001 divert 989 udp from any to any 443 out not diverted not sockarg xmit igc0' "${ipfw_log}"
+YOUTUBE_QUIC_ENABLED="0"
+YOUTUBE_QUIC_ARGS=""
+PORTS="80,443"
+: > "${ipfw_log}"
+
 # Managed TCP profiles add interception ports without requiring manual edits
 # to the generic TCP port list.
 PORTS="80,443"
