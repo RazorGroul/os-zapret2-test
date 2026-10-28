@@ -24,6 +24,11 @@
                 <Mask>/^[0-9,]+$/</Mask>
                 <ValidationMessage>Please enter comma-separated port numbers.</ValidationMessage>
             </ports>
+            <udpports type="TextField">
+                <Required>N</Required>
+                <Mask>/^[0-9,\-\s]*$/</Mask>
+                <ValidationMessage>Please enter UDP ports or ranges separated by commas (1-65535).</ValidationMessage>
+            </udpports>
             <sourcenets type="NetworkField">
                 <Required>N</Required>
                 <NetMaskAllowed>Y</NetMaskAllowed>
@@ -43,6 +48,16 @@
             <quicargs type="TextField">
                 <Required>N</Required>
             </quicargs>
+            <udpfilterl7 type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,\-]*$/</Mask>
+                <ValidationMessage>Use comma-separated protocol names containing only letters, digits, underscores, or hyphens.</ValidationMessage>
+            </udpfilterl7>
+            <udpargs type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,.:=+\/@%# \-]*$/</Mask>
+                <ValidationMessage>Use zapret2 profile arguments with letters, digits, spaces, and supported argument punctuation only.</ValidationMessage>
+            </udpargs>
             <extraargs type="TextField">
                 <Required>N</Required>
             </extraargs>
