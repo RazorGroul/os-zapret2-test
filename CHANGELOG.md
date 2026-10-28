@@ -4,6 +4,15 @@ All notable changes to os-zapret2 are documented in this file.
 
 ## Unreleased
 
+### Added
+- Optional additional UDP port/range profile with L7 filtering and strategy fields, intended for use cases such as Discord voice.
+- Validation for UDP port ranges, L7 protocol names, strategy argument grammar, QUIC port overlap, and reserved ipfw-rule capacity.
+
+### Safety
+- Additional UDP strategy input is restricted to payload selectors and Lua desync actions; invalid or incomplete profiles fail validation before installing divert rules.
+- Failed divert-rule installation removes the plugin's reserved rules and aborts service startup.
+
+
 ## v1.8.3 - 2026-08-10
 
 Most of this release was contributed by [apfilipp](https://github.com/apfilipp).
