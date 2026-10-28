@@ -26,6 +26,14 @@ helpers=$(sed -n '/^validate_udp_configuration()/,/^start_service()/p' \
     "${service}" | sed '$d' | sed "s#/sbin/ipfw#${fake_ipfw}#g")
 eval "${helpers}"
 
+# This suite isolates UDP/ipfw behavior; full IPSet validation is exercised by
+# tests/ipset_validation_test.sh.
+validate_ipset_configuration()
+{
+    IPSET_ARGS=""
+    return 0
+}
+
 # install_ipfw_rules normally clears its reserved range; the fake log has no
 # external rules, so make cleanup a no-op for these isolated command tests.
 remove_ipfw_rules()
