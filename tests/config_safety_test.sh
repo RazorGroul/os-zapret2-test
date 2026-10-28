@@ -56,6 +56,15 @@ expect_rejected "${test_root}/backtick.conf"
 printf '%s\n' 'HTTP_ARGS="escaped\value"' > "${test_root}/backslash.conf"
 expect_rejected "${test_root}/backslash.conf"
 
+printf '%s\n' 'EXTRA_ARGS="--test=*"' > "${test_root}/glob-star.conf"
+expect_rejected "${test_root}/glob-star.conf"
+
+printf '%s\n' 'EXTRA_ARGS="--test=?"' > "${test_root}/glob-question.conf"
+expect_rejected "${test_root}/glob-question.conf"
+
+printf '%s\n' 'EXTRA_ARGS="--test=[abc]"' > "${test_root}/glob-bracket.conf"
+expect_rejected "${test_root}/glob-bracket.conf"
+
 printf 'HTTP_ARGS=""; touch %s; #"\n' "${marker}" > "${test_root}/quote-injection.conf"
 expect_rejected "${test_root}/quote-injection.conf"
 
