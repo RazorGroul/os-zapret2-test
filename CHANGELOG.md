@@ -4,6 +4,10 @@ All notable changes to os-zapret2 are documented in this file.
 
 ## Unreleased
 
+### Fixed
+- Avoid attaching hostname hostlists to non-QUIC UDP profiles such as Discord voice/STUN, WireGuard, DHT, and unknown UDP flows that generally cannot provide a hostname for domain matching. Pure QUIC UDP profiles continue to inherit hostlist settings.
+- Reject TCP and UDP port values with more than five significant decimal digits before numeric comparisons, preventing oversized input from reaching shell integer tests.
+
 ### Added
 - Optional additional UDP port/range profile with L7 filtering and strategy fields, intended for use cases such as Discord voice.
 - Validation for UDP port ranges, L7 protocol names, strategy argument grammar, QUIC port overlap, and reserved ipfw-rule capacity.
