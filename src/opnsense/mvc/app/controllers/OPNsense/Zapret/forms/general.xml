@@ -190,6 +190,21 @@
     </field>
     <field>
         <type>header</type>
+        <label>Custom Profiles (Advanced)</label>
+    </field>
+    <field>
+        <type>info</type>
+        <label>Custom profile format</label>
+        <text><![CDATA[Optional JSON array of up to 8 profiles. Enabled profiles run in ascending <code>order</code> before the built-in YouTube/Google, Discord, and generic fallback profiles. Each profile requires a unique safe <code>name</code>, unique integer <code>order</code>, <code>transport</code> (<code>tcp</code>/<code>udp</code>), <code>ports</code> (comma-separated numbers or ranges), an <code>l7</code> protocol array, and a validated <code>strategy</code>. Optional <code>domains</code> and <code>exclude_domains</code> arrays create profile-specific hostname lists; non-QUIC UDP profiles cannot use hostname lists. <code>ipset</code> can be <code>inherit</code>, <code>none</code>, <code>include</code>, <code>exclude</code>, or <code>both</code>. Strategy fields reject shell syntax and arbitrary flags.]]></text>
+    </field>
+    <field>
+        <id>zapret.customprofiles.json</id>
+        <label>Custom Profiles JSON</label>
+        <type>textbox</type>
+        <help><![CDATA[Example: <code>[{"enabled":true,"name":"discord-voice","order":10,"transport":"udp","ports":"19294-19344,50000-50100","l7":["discord","stun"],"domains":[],"exclude_domains":[],"ipset":"inherit","strategy":"--payload=stun,discord_ip_discovery --lua-desync=fake:blob=fake_default_quic:repeats=6"}]</code>. Enter valid JSON. Leave as <code>[]</code> when unused. Profiles are validated before divert rules are installed.]]></help>
+    </field>
+    <field>
+        <type>header</type>
         <label>Host List</label>
     </field>
     <field>
