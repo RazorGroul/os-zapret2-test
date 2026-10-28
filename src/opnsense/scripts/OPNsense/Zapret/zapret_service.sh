@@ -730,7 +730,7 @@ validate_custom_profiles() {
             (.l7 | (type == "array" and all(.[]; type == "string") and length > 0)) and
             ((.domains // []) | (type == "array" and all(.[]; type == "string"))) and
             ((.exclude_domains // []) | (type == "array" and all(.[]; type == "string"))) and
-            (.ipset | type == "string") and
+            ((.ipset // "inherit") | type == "string") and
             (.strategy | type == "string")
         )
     ' "${CUSTOM_PROFILES_FILE}" >/dev/null 2>&1; then
@@ -749,7 +749,7 @@ validate_custom_profiles() {
         ports=$("${JQ_BIN}" -r ".[${i}].ports" "${CUSTOM_PROFILES_FILE}")
         l7=$("${JQ_BIN}" -r ".[${i}].l7 | join(\",\")" "${CUSTOM_PROFILES_FILE}")
         strategy=$("${JQ_BIN}" -r ".[${i}].strategy" "${CUSTOM_PROFILES_FILE}")
-        ipset=$("${JQ_BIN}" -r ".[${i}].ipset" "${CUSTOM_PROFILES_FILE}")
+        ipset=$("${JQ_BIN}" -r ".[${i}].ipset // \"inherit\"" "${CUSTOM_PROFILES_FILE}")
         domains_count=$("${JQ_BIN}" -r "(.[${i}].domains // []) | length" "${CUSTOM_PROFILES_FILE}")
         excludes_count=$("${JQ_BIN}" -r "(.[${i}].exclude_domains // []) | length" "${CUSTOM_PROFILES_FILE}")
 
@@ -838,7 +838,6 @@ validate_custom_profiles() {
         i=$((i + 1))
     done
 
-    prepare_custom_profile_hostlists || return 1
     return 0
 }
 
@@ -860,7 +859,7 @@ build_custom_profile_args() {
         ports=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.ports')
         l7=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.l7 | join(",")')
         strategy=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.strategy')
-        ipset=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.ipset')
+        ipset=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.ipset // "inherit"')
         normalize_port_spec "${ports}" "custom profile ${name}" || return 1
         ports="${PORT_SPEC_NORMALIZED}"
         profile_ipset_arguments "${ipset}" || return 1
@@ -1119,6 +1118,13 @@ start_service() {
         echo "dvtws2 binary not found at ${DVTWS_BIN} — run setup.sh first" >&2
         exit 1
     fi
+
+    # Generate only plugin-owned per-profile hostlists after full validation
+    # and before dvtws2 opens them. Validation itself remains side-effect free.
+    prepare_custom_profile_hostlists || {
+        echo "failed to prepare custom profile hostlists" >&2
+        exit 1
+    }
 
     # Load required kernel modules. ipdivert is the divert socket
     # backend; ipfw is the firewall that owns our divert rules.
