@@ -95,6 +95,20 @@ The Settings page can optionally pass zapret2 `--ipset=` and `--ipset-exclude=` 
 
 An include IPSet can change which CDN addresses are processed and therefore should be enabled only after confirming that the list is appropriate for the intended services.
 
+## Managed service profiles
+
+The Settings page also exposes opt-in, service-specific profiles. They are placed before the general fallback profiles so a matching connection receives the intended strategy.
+
+- **YouTube / Google TCP** matches the bundled hostlist on TCP/443 with the TLS L7 filter. **YouTube / Google QUIC** matches the same hostlist on UDP/443. The two profiles have independent enable switches and strategy fields.
+- **Discord TCP** matches the bundled Discord hostlist on TCP ports `443,2053,2083,2087,2096,8443`. Enabling it also adds those ports to the `ipfw divert` interception list automatically; the generic Ports field does not have to be edited manually.
+- **Discord voice / additional UDP** uses Additional UDP Ports plus the UDP L7 filter and a strategy. A commonly used starting port list is `19294-19344,50000-50100`, with `discord,stun` as the L7 filter. This is only a profile/filter starting point; strategy effectiveness depends on the ISP and the exact zapret2 build.
+
+Managed-profile strategy fields accept verified `--payload=...`, `--lua-desync=...`, and optional `--out-range=...` tokens. Do not paste a full BAT line, classic zapret flags such as `--dpi-desync`, shell syntax, or `--new`/filter/hostlist flags into a strategy field. The plugin generates profile boundaries and filter flags itself.
+
+The bundled YouTube/Google and Discord lists are based on the supplied legacy lists. Two separate checkboxes optionally import the supplied general and exclusion domain lists into the generic hostlist templates. Both are off by default, so the old generic hostlist behavior does not change unless enabled. Extra domain fields append entries to the corresponding managed service list.
+
+The legacy IPSet include list is not bundled automatically. The active `ipset-all.txt` supplied in the old configuration contained only `203.0.113.113/32`, a documentation-only address, so it must **not** be used as the active include list. Copy the valid `ipset-all.txt.backup` to `/usr/local/etc/zapret2/ipset-all.txt` on OPNsense before enabling the include filter. The service validates its CIDR syntax before applying it. The legacy exclude IPSet can be uploaded separately and selected by filename; otherwise the bundled local/private-range exclusion file is available.
+
 ## Quick start
 
 1. **Services → Zapret DPI Bypass → Diagnostics → Blockcheck.** Enter a domain that's blocked on your ISP (e.g., `rutracker.org`, or any site you can't reach). Click **Run**. Wait 1–3 minutes — the plugin runs upstream's `blockcheck2` against ~50 strategies and reports the winning ones.
