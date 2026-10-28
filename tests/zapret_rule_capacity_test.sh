@@ -208,7 +208,9 @@ expect_udp_invalid "$long_list" "discord" "--lua-desync=fake" ""
 
 # Ensure the service constructs the additional dvtws2 profile with UDP ports,
 # L7 filter, shared host lists, and the validated strategy arguments.
-grep -qF 'args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${hostlist_noauto_args}${IPSET_ARGS} ${UDP_ARGS}"' "${service}"
+grep -qF 'local udp_hostlist_args="${hostlist_noauto_args}"' "${service}"
+grep -qF '*,discord,*) udp_hostlist_args=" --hostlist=${DISCORD_HOSTLIST}${hostlist_exclude_args}" ;;' "${service}"
+grep -qF 'args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${udp_hostlist_args}${IPSET_ARGS} ${UDP_ARGS}"' "${service}"
 
 # Invalid additional UDP settings must be rejected before any ipfw rule is added.
 : > "${ipfw_log}"
