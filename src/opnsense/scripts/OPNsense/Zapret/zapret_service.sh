@@ -747,7 +747,7 @@ validate_custom_profiles() {
         order=$("${JQ_BIN}" -r ".[${i}].order | tostring" "${CUSTOM_PROFILES_FILE}")
         transport=$("${JQ_BIN}" -r ".[${i}].transport" "${CUSTOM_PROFILES_FILE}")
         ports=$("${JQ_BIN}" -r ".[${i}].ports" "${CUSTOM_PROFILES_FILE}")
-        l7=$("${JQ_BIN}" -r ".[${i}].l7 | join(",")" "${CUSTOM_PROFILES_FILE}")
+        l7=$("${JQ_BIN}" -r ".[${i}].l7 | join(\",\")" "${CUSTOM_PROFILES_FILE}")
         strategy=$("${JQ_BIN}" -r ".[${i}].strategy" "${CUSTOM_PROFILES_FILE}")
         ipset=$("${JQ_BIN}" -r ".[${i}].ipset" "${CUSTOM_PROFILES_FILE}")
         domains_count=$("${JQ_BIN}" -r "(.[${i}].domains // []) | length" "${CUSTOM_PROFILES_FILE}")
@@ -1064,50 +1064,26 @@ install_ipfw_rules() {
         rulenum=$((rulenum + 1))
     done
 
-    # QUIC / HTTP3 profile: UDP 443.
-    if [ -n "${QUIC_ARGS}" ] || [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; then
+    # All enabled UDP profiles share one divert rule. The comma-separated
+    # union is validated before installation; dvtws2 then selects the first
+    # matching profile by its ordered transport/port/L7 filters.
+    if [ -n "${UDP_INTERCEPT_PORTS}" ]; then
         if ! /sbin/ipfw -f add ${rulenum} divert ${DIVERT_PORT} udp \
-            from "${src_spec}" to any 443 \
+            from "${src_spec}" to any "${UDP_INTERCEPT_PORTS}" \
             out not diverted not sockarg xmit ${wan_dev} >/dev/null 2>&1; then
             remove_ipfw_rules
             IFS="${IFS_SAVED}"
-            echo "failed to install ipfw QUIC divert rule from '${src_spec}' — check Source Networks syntax" >&2
+            echo "failed to install UDP divert rule for ${UDP_INTERCEPT_PORTS} from '${src_spec}'" >&2
             return 1
         fi
 
         if [ -n "${SOURCE_NETS}" ]; then
             if ! /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} udp \
-                from me to any 443 \
+                from me to any "${UDP_INTERCEPT_PORTS}" \
                 out not diverted not sockarg xmit ${wan_dev}; then
                 remove_ipfw_rules
                 IFS="${IFS_SAVED}"
-                echo "failed to install ipfw QUIC rule for firewall-originated traffic" >&2
-                return 1
-            fi
-        fi
-
-        rulenum=$((rulenum + 1))
-    fi
-
-    # Optional additional UDP profile. A validated port list consumes one
-    # firewall rule regardless of how many ranges it contains.
-    if [ -n "${UDP_PORTS}" ]; then
-        if ! /sbin/ipfw -f add ${rulenum} divert ${DIVERT_PORT} udp \
-            from "${src_spec}" to any "${UDP_PORTS}" \
-            out not diverted not sockarg xmit ${wan_dev} >/dev/null 2>&1; then
-            remove_ipfw_rules
-            IFS="${IFS_SAVED}"
-            echo "failed to install additional UDP divert rule for ${UDP_PORTS} from '${src_spec}'" >&2
-            return 1
-        fi
-
-        if [ -n "${SOURCE_NETS}" ]; then
-            if ! /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} udp \
-                from me to any "${UDP_PORTS}" \
-                out not diverted not sockarg xmit ${wan_dev}; then
-                remove_ipfw_rules
-                IFS="${IFS_SAVED}"
-                echo "failed to install additional UDP rule for firewall-originated traffic" >&2
+                echo "failed to install UDP rule for firewall-originated traffic" >&2
                 return 1
             fi
         fi
@@ -1184,6 +1160,14 @@ start_service() {
     fi
 
     local profile_started=0
+    build_custom_profile_args || {
+        echo "could not build custom profile arguments" >&2
+        exit 1
+    }
+    if [ -n "${CUSTOM_PROFILE_ARGS}" ]; then
+        args="${args}${CUSTOM_PROFILE_ARGS}"
+        profile_started=1
+    fi
 
     # YouTube / Google TLS profile (TCP/443).
     if [ "${YOUTUBE_TCP_ENABLED:-0}" = "1" ]; then
@@ -1221,14 +1205,10 @@ start_service() {
         args="${args} --new --filter-udp=443 --filter-l7=quic${hostlist_noauto_args}${IPSET_ARGS} ${QUIC_ARGS}"
     fi
 
-    # Additional UDP profile, for example Discord voice, is independent of
-    # UDP/443 unless explicitly configured to overlap it (which is rejected).
+    # Optional built-in Additional UDP profile is a fallback after custom
+    # profiles and named service profiles. Only a pure QUIC profile can use
+    # hostname hostlists; other UDP traffic should be scoped with IPSet.
     if [ -n "${UDP_PORTS}" ]; then
-        # Hostlists require a hostname parsed from the flow. Discord voice,
-        # STUN, WireGuard, DHT and unknown UDP flows generally have no such
-        # hostname, so attaching a hostlist would prevent the profile from
-        # matching them. Only a pure QUIC profile can safely inherit domain
-        # hostlists; use IPSet filters to scope other UDP profiles by address.
         local udp_hostlist_args=""
         if [ "${UDP_FILTER_L7}" = "quic" ]; then
             udp_hostlist_args="${hostlist_noauto_args}"
@@ -1325,6 +1305,7 @@ stop_service() {
         rm -f "${PIDFILE}"
     fi
     killall dvtws2 2>/dev/null
+    cleanup_custom_profile_lists
 
     echo "zapret is not running (stopped)"
 }
