@@ -123,6 +123,12 @@
                 <ValidationMessage>Enter a filename only, without a directory path.</ValidationMessage>
             </excludefile>
         </ipset>
+        <customprofiles>
+            <json type="TextField">
+                <Default>[]</Default>
+                <Required>N</Required>
+            </json>
+        </customprofiles>
         <hostlist>
             <uselegacydomains type="BooleanField">
                 <Default>0</Default>
