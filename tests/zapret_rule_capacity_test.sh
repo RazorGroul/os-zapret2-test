@@ -22,6 +22,16 @@ chmod +x "${fake_ipfw}"
 
 RULE_BASE=19000
 RULE_MAX=19010
+JQ_BIN=$(command -v jq 2>/dev/null || true)
+ZAPRET_DIR="${test_root}/zapret"
+CUSTOM_PROFILES_FILE="${test_root}/no-custom-profiles.json"
+CUSTOM_PROFILE_LIST_DIR="${ZAPRET_DIR}/custom-hostlists"
+HOSTLIST_EXCLUDE="${ZAPRET_DIR}/hostlist-exclude.txt"
+IPSET_INCLUDE_ENABLED="0"
+IPSET_EXCLUDE_ENABLED="0"
+IPSET_INCLUDE_FILE="ipset-all.txt"
+IPSET_EXCLUDE_FILE="ipset-exclude-default.txt"
+mkdir -p "${ZAPRET_DIR}"
 helpers=$(sed -n '/^validate_strategy_arguments()/,/^start_service()/p' \
     "${service}" | sed '$d' | sed "s#/sbin/ipfw#${fake_ipfw}#g")
 eval "${helpers}"
@@ -146,7 +156,7 @@ UDP_PORTS=" 019294 - 019344, 50000-50100 "
 UDP_FILTER_L7="Discord,STUN"
 UDP_ARGS="--payload=stun --lua-desync=fake:repeats=6"
 install_ipfw_rules igc0
-grep -qF 'add 19010 divert 989 udp from any to any 19294-19344,50000-50100 out not diverted not sockarg xmit igc0' "${ipfw_log}"
+grep -qF 'add 19009 divert 989 udp from any to any 443,19294-19344,50000-50100 out not diverted not sockarg xmit igc0' "${ipfw_log}"
 test "${UDP_PORTS}" = "19294-19344,50000-50100"
 test "${UDP_FILTER_L7}" = "discord,stun"
 
@@ -166,7 +176,7 @@ SOURCE_NETS=""
 
 # Reserved rule-range exhaustion accounts for TCP, QUIC and custom UDP.
 : > "${ipfw_log}"
-PORTS="1,2,3,4,5,6,7,8,9,10"
+PORTS="1,2,3,4,5,6,7,8,9,10,11"
 QUIC_ARGS="--payload=quic_initial"
 UDP_PORTS="19294-19344"
 UDP_FILTER_L7="discord,stun"
