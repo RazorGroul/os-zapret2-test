@@ -78,6 +78,20 @@ grep -qF 'add 19010 divert 989 udp from any to any 19294-19344,50000-50100 out n
 test "${UDP_PORTS}" = "19294-19344,50000-50100"
 test "${UDP_FILTER_L7}" = "discord,stun"
 
+# Source Networks must produce both the client subnet rule and the separate
+# firewall-originated rule, with the same normalized UDP ports.
+: > "${ipfw_log}"
+SOURCE_NETS="192.168.1.0/24"
+PORTS="80,443"
+QUIC_ARGS=""
+UDP_PORTS="19294-19344,50000-50100"
+UDP_FILTER_L7="discord,stun"
+UDP_ARGS="--payload=stun,discord_ip_discovery --lua-desync=fake:repeats=2"
+install_ipfw_rules igc0
+grep -qF 'add 19002 divert 989 udp from 192.168.1.0/24 to any 19294-19344,50000-50100 out not diverted not sockarg xmit igc0' "${ipfw_log}"
+grep -qF 'add 19002 divert 989 udp from me to any 19294-19344,50000-50100 out not diverted not sockarg xmit igc0' "${ipfw_log}"
+SOURCE_NETS=""
+
 # Reserved rule-range exhaustion accounts for TCP, QUIC and custom UDP.
 : > "${ipfw_log}"
 PORTS="1,2,3,4,5,6,7,8,9,10"
