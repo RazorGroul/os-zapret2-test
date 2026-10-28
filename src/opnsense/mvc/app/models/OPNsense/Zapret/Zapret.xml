@@ -55,7 +55,7 @@
             </udpfilterl7>
             <udpargs type="TextField">
                 <Required>N</Required>
-                <Mask>/^[a-zA-Z0-9_,.:=+\/@%# \-]*$/</Mask>
+                <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
                 <ValidationMessage>Use zapret2 profile arguments with letters, digits, spaces, and supported argument punctuation only.</ValidationMessage>
             </udpargs>
             <extraargs type="TextField">
