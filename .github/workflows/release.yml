@@ -42,6 +42,7 @@ jobs:
           sh tests/custom_profiles_test.sh
           sh tests/config_safety_test.sh
           sh tests/ipfw_state_test.sh
+          sh tests/setup_engine_pin_test.sh
 
   build:
     name: Build FreeBSD ${{ matrix.major }} pkg
