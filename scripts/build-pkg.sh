@@ -114,7 +114,7 @@ jq -n \
     --arg origin "opnsense/${PKG_NAME}" \
     --arg comment "${PLUGIN_COMMENT}" \
     --arg maintainer "${PLUGIN_MAINTAINER}" \
-    --arg www "https://github.com/ugorur/os-zapret2" \
+    --arg www "https://github.com/RazorGroul/os-zapret2-test" \
     --arg license "${PLUGIN_LICENSE}" \
     --argjson desc "${DESC_JSON}" \
     --argjson deps "${DEPS}" \
