@@ -206,11 +206,33 @@ while [ "$i" -le 31 ]; do
 done
 expect_udp_invalid "$long_list" "discord" "--lua-desync=fake" ""
 
-# Ensure the service constructs the additional dvtws2 profile with UDP ports,
-# L7 filter, shared host lists, and the validated strategy arguments.
-grep -qF 'local udp_hostlist_args="${hostlist_noauto_args}"' "${service}"
-grep -qF '*,discord,*) udp_hostlist_args=" --hostlist=${DISCORD_HOSTLIST}${hostlist_exclude_args}" ;;' "${service}"
+# Non-QUIC UDP traffic has no reliable hostname to match. Ensure hostname
+# hostlists are attached only to a pure QUIC UDP profile; IPSet filters remain
+# available for all profiles to scope traffic by destination address.
+grep -qF 'local udp_hostlist_args=""' "${service}"
+grep -qF 'if [ "${UDP_FILTER_L7}" = "quic" ]; then' "${service}"
+grep -qF 'udp_hostlist_args="${hostlist_noauto_args}"' "${service}"
+if grep -qF '*,discord,*) udp_hostlist_args=' "${service}"; then
+    echo 'Discord UDP profile must not use hostname hostlist filtering' >&2
+    exit 1
+fi
 grep -qF 'args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${udp_hostlist_args}${IPSET_ARGS} ${UDP_ARGS}"' "${service}"
+
+# Numeric range checks must reject extremely long values before test(1)
+# attempts integer comparisons that could overflow the target shell.
+huge=9
+i=1
+while [ "${i}" -lt 300 ]; do
+    huge="${huge}9"
+    i=$((i + 1))
+done
+expect_udp_invalid "${huge}" "discord,stun" "--lua-desync=fake" ""
+PORTS="${huge}"
+if validate_tcp_ports >/dev/null 2>&1; then
+    echo 'oversized TCP port number unexpectedly passed validation' >&2
+    exit 1
+fi
+PORTS="80,443"
 
 # Invalid additional UDP settings must be rejected before any ipfw rule is added.
 : > "${ipfw_log}"
