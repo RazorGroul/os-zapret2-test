@@ -9,6 +9,8 @@ All notable changes to os-zapret2 are documented in this file.
 - Reject TCP and UDP port values with more than five significant decimal digits before numeric comparisons, preventing oversized input from reaching shell integer tests.
 
 ### Added
+- Advanced JSON-defined custom profiles with ordering, transport/port filters, L7 selectors, per-profile hostname lists for TCP/pure QUIC, and per-profile IPSet selection.
+- A shared UDP divert rule covering built-in QUIC and enabled custom UDP profiles, with the individual dvtws2 filters still selecting the matching profile.
 - Optional additional UDP port/range profile with L7 filtering and strategy fields, intended for use cases such as Discord voice.
 - Validation for UDP port ranges, L7 protocol names, strategy argument grammar, QUIC port overlap, and reserved ipfw-rule capacity.
 - Optional zapret2 IPSet include/exclude filters applied to configured profiles, with strict IPv4/IPv6 CIDR file validation.
