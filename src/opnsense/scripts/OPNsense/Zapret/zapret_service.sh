@@ -1163,6 +1163,11 @@ start_service() {
         exit 0
     fi
 
+    # Remove stale plugin-owned divert rules before any fallible startup step.
+    # If dvtws2, hostlist generation, interface resolution or kernel setup fails,
+    # traffic must fail open rather than be diverted into a dead socket.
+    remove_ipfw_rules
+
     if [ ! -x "${DVTWS_BIN}" ]; then
         echo "dvtws2 binary not found at ${DVTWS_BIN} — run setup.sh first" >&2
         exit 1
