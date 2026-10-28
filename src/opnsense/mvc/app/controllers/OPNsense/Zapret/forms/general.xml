@@ -95,7 +95,7 @@
         <id>zapret.strategy.udpargs</id>
         <label>Additional UDP Strategy</label>
         <type>text</type>
-        <help><![CDATA[Paste only verified zapret2 profile arguments of the form <code>--payload=...</code> and <code>--lua-desync=...</code>, separated by spaces. Do not include <code>--new</code>, <code>--filter-udp</code>, <code>--filter-l7</code>, shell syntax, or file paths. Required together with Additional UDP Ports and UDP L7 Protocol Filter. Example structure: <code>--payload=stun --lua-desync=fake:blob=fake_default_quic:repeats=6</code> (strategy is illustrative; verify it with your zapret2 build and traffic).]]></help>
+        <help><![CDATA[Paste only verified zapret2 profile arguments of the form <code>--payload=...</code>, <code>--lua-desync=...</code>, and optional <code>--out-range=...</code>, separated by spaces. Do not include <code>--new</code>, <code>--filter-udp</code>, <code>--filter-l7</code>, shell syntax, or file paths. Required together with Additional UDP Ports and UDP L7 Protocol Filter. Example structure: <code>--payload=stun --lua-desync=fake:blob=fake_default_quic:repeats=6</code> (strategy is illustrative; verify it with your zapret2 build and traffic).]]></help>
     </field>
     <field>
         <id>zapret.strategy.extraargs</id>
@@ -118,7 +118,7 @@
         <id>zapret.youtube.tcpstrategy</id>
         <label>YouTube / Google TCP Strategy</label>
         <type>text</type>
-        <help><![CDATA[When the TCP profile is enabled, provide verified zapret2 arguments such as <code>--payload=tls_client_hello --lua-desync=...</code>. Do not include <code>--new</code>, filters, hostlists, paths, or shell syntax.]]></help>
+        <help><![CDATA[When the TCP profile is enabled, provide verified zapret2 arguments such as <code>--payload=tls_client_hello --lua-desync=...</code> with optional <code>--out-range=-d10</code>. Do not include <code>--new</code>, filters, hostlists, paths, or shell syntax.]]></help>
     </field>
     <field>
         <id>zapret.youtube.quicenabled</id>
@@ -130,7 +130,7 @@
         <id>zapret.youtube.quicstrategy</id>
         <label>YouTube / Google QUIC Strategy</label>
         <type>text</type>
-        <help><![CDATA[When the QUIC profile is enabled, provide verified zapret2 arguments such as <code>--payload=quic_initial --lua-desync=...</code>. Do not include <code>--new</code>, filters, hostlists, paths, or shell syntax.]]></help>
+        <help><![CDATA[When the QUIC profile is enabled, provide verified zapret2 arguments such as <code>--payload=quic_initial --lua-desync=...</code> with optional <code>--out-range=-d10</code>. Do not include <code>--new</code>, filters, hostlists, paths, or shell syntax.]]></help>
     </field>
     <field>
         <id>zapret.youtube.domains</id>
