@@ -414,6 +414,33 @@ validate_udp_configuration() {
     return 0
 }
 
+build_tcp_intercept_ports() {
+    local combined="${PORTS:-}"
+    local port
+
+    # Managed TCP profiles require their own interception ports. Append only
+    # ports not already present so the reserved rule count remains deterministic.
+    if [ "${YOUTUBE_TCP_ENABLED:-0}" = "1" ] || [ "${DISCORD_TCP_ENABLED:-0}" = "1" ]; then
+        for port in 443; do
+            case ",${combined}," in
+                *,"${port}",*) ;;
+                *) combined="${combined:+${combined},}${port}" ;;
+            esac
+        done
+    fi
+
+    if [ "${DISCORD_TCP_ENABLED:-0}" = "1" ]; then
+        for port in 2053 2083 2087 2096 8443; do
+            case ",${combined}," in
+                *,"${port}",*) ;;
+                *) combined="${combined:+${combined},}${port}" ;;
+            esac
+        done
+    fi
+
+    printf '%s\n' "${combined}"
+}
+
 validate_ipfw_rule_capacity() {
     local rule_capacity=$((RULE_MAX - RULE_BASE + 1))
     local rule_count=0
@@ -423,8 +450,10 @@ validate_ipfw_rule_capacity() {
     validate_managed_profiles || return 1
     validate_udp_configuration || return 1
 
+    TCP_INTERCEPT_PORTS=$(build_tcp_intercept_ports)
+
     IFS=","
-    for port in ${PORTS}; do
+    for port in ${TCP_INTERCEPT_PORTS}; do
         rule_count=$((rule_count + 1))
     done
     IFS="${IFS_SAVED}"
@@ -494,7 +523,7 @@ install_ipfw_rules() {
     local IFS_SAVED="${IFS}"
     IFS=","
 
-    for port in ${PORTS}; do
+    for port in ${TCP_INTERCEPT_PORTS}; do
         # src_spec is quoted: IFS is "," here and the address list must
         # reach ipfw as a single token.
         if ! /sbin/ipfw -f add ${rulenum} divert ${DIVERT_PORT} tcp \
