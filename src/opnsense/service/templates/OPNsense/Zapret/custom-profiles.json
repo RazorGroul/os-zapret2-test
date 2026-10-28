@@ -1,0 +1,5 @@
+{% if helpers.exists('OPNsense.Zapret.customprofiles.json') and OPNsense.Zapret.customprofiles.json != '' %}
+{{ OPNsense.Zapret.customprofiles.json }}
+{% else %}
+[]
+{% endif %}
