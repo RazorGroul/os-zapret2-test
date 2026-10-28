@@ -22,7 +22,7 @@ chmod +x "${fake_ipfw}"
 
 RULE_BASE=19000
 RULE_MAX=19010
-helpers=$(sed -n '/^validate_udp_configuration()/,/^start_service()/p' \
+helpers=$(sed -n '/^validate_strategy_arguments()/,/^start_service()/p' \
     "${service}" | sed '$d' | sed "s#/sbin/ipfw#${fake_ipfw}#g")
 eval "${helpers}"
 
@@ -144,7 +144,7 @@ expect_udp_invalid "$long_list" "discord" "--lua-desync=fake" ""
 
 # Ensure the service constructs the additional dvtws2 profile with UDP ports,
 # L7 filter, shared host lists, and the validated strategy arguments.
-grep -qF 'args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${hostlist_noauto_args} ${UDP_ARGS}"' "${service}"
+grep -qF 'args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${hostlist_noauto_args}${IPSET_ARGS} ${UDP_ARGS}"' "${service}"
 
 # Invalid additional UDP settings must be rejected before any ipfw rule is added.
 : > "${ipfw_log}"
