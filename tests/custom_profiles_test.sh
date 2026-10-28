@@ -132,6 +132,21 @@ case "${CUSTOM_PROFILE_ARGS}" in
     *";"*|*"touch "*|*"--new;") echo "unsafe text reached the constructed argument string" >&2; exit 1 ;;
 esac
 
+# Integrate custom ports with capacity calculation. The UDP union is handled
+# by one divert rule, while TCP ports continue to consume per-port rule slots.
+validate_ipset_configuration()
+{
+    IPSET_ARGS=""
+    return 0
+}
+RULE_BASE=19000
+RULE_MAX=19010
+DIVERT_PORT=989
+SOURCE_NETS=""
+validate_ipfw_rule_capacity
+test "${TCP_INTERCEPT_PORTS}" = "80,443,8443-8444"
+test "${UDP_INTERCEPT_PORTS}" = "19294-19344,50000-50100,443"
+
 # A missing ipset selector defaults to inherit for less verbose JSON.
 cat > "${CUSTOM_PROFILES_FILE}" <<'JSON'
 [
