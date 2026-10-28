@@ -157,6 +157,45 @@ validate_custom_profiles
 build_custom_profile_args
 case "${CUSTOM_PROFILE_ARGS}" in *"--filter-tcp=8443 --filter-l7=tls"*) ;; *) exit 1 ;; esac
 
+# Each custom profile may independently choose an enabled global IPSet filter.
+IPSET_INCLUDE_ENABLED="0"
+cat > "${CUSTOM_PROFILES_FILE}" <<'JSON'
+[
+  {"enabled":true,"name":"ipset-required","order":1,"transport":"tcp","ports":"8443","l7":["tls"],"ipset":"include","strategy":"--payload=tls_client_hello --lua-desync=fake:repeats=1"}
+]
+JSON
+if validate_custom_profiles >/dev/null 2>&1; then
+    echo "custom profile unexpectedly used a disabled IPSet include filter" >&2
+    exit 1
+fi
+IPSET_INCLUDE_ENABLED="1"
+IPSET_INCLUDE_FILE="ipset-all.txt"
+validate_custom_profiles
+build_custom_profile_args
+case "${CUSTOM_PROFILE_ARGS}" in
+    *"--ipset=${ZAPRET_DIR}/ipset-all.txt"*) ;;
+    *) echo "custom profile include IPSet argument missing" >&2; exit 1 ;;
+esac
+
+IPSET_EXCLUDE_ENABLED="1"
+IPSET_EXCLUDE_FILE="ipset-exclude-default.txt"
+sed 's/"ipset":"include"/"ipset":"both"/' "${CUSTOM_PROFILES_FILE}" > "${test_root}/both.json"
+# Replace the full file with a valid both-filter profile.
+cat > "${CUSTOM_PROFILES_FILE}" <<'JSON'
+[
+  {"enabled":true,"name":"ipset-both","order":1,"transport":"tcp","ports":"8443","l7":["tls"],"ipset":"both","strategy":"--payload=tls_client_hello --lua-desync=fake:repeats=1"}
+]
+JSON
+validate_custom_profiles
+build_custom_profile_args
+case "${CUSTOM_PROFILE_ARGS}" in
+    *"--ipset=${ZAPRET_DIR}/ipset-all.txt --ipset-exclude=${ZAPRET_DIR}/ipset-exclude-default.txt"*) ;;
+    *) echo "custom profile combined IPSet arguments missing" >&2; exit 1 ;;
+esac
+
+IPSET_INCLUDE_ENABLED="0"
+IPSET_EXCLUDE_ENABLED="0"
+
 expect_invalid()
 {
     printf '%s\n' "$1" > "${CUSTOM_PROFILES_FILE}"
