@@ -16,6 +16,7 @@
 ZAPRET_DIR="/usr/local/etc/zapret2"
 BLOCKCHECK="${ZAPRET_DIR}/blockcheck2.sh"
 CONFIG="${ZAPRET_DIR}/zapret.conf"
+CONFIG_VALIDATOR="/usr/local/opnsense/scripts/OPNsense/Zapret/validate_config.sh"
 WINNER_PARSER="/usr/local/opnsense/scripts/OPNsense/Zapret/blockcheck_winners.awk"
 JQ="/usr/local/bin/jq"
 
@@ -122,6 +123,12 @@ if [ ! -f "${CONFIG}" ]; then
 fi
 if [ ! -r "${WINNER_PARSER}" ]; then
     emit_error "blockcheck winner parser not found — reinstall the plugin"
+    exit 0
+fi
+
+# Validate the generated file before sourcing any GUI-controlled values.
+if [ ! -r "${CONFIG_VALIDATOR}" ] || ! /bin/sh "${CONFIG_VALIDATOR}" "${CONFIG}"; then
+    emit_error "zapret config is invalid or contains unsafe shell syntax; save the plugin settings again after updating the package"
     exit 0
 fi
 
