@@ -73,6 +73,18 @@ sh scripts/build-pkg.sh
 # Output: dist/os-zapret2-<version>.pkg
 ```
 
+## Additional UDP profile
+
+The Settings page can optionally divert one additional set of UDP ports or ranges to a separate zapret2 profile. This is intended for traffic such as Discord voice, where the transport ports and L7 filter differ from QUIC/UDP 443.
+
+- **Additional UDP Ports** accepts comma-separated numeric ports or ranges, for example `19294-19344,50000-50100`. Only numeric values from 1 to 65535 are accepted; ranges must be ascending; at most 30 entries are allowed by FreeBSD `ipfw`.
+- **Additional UDP L7 Protocol Filter** accepts zapret2 protocol names: `discord`, `stun`, `wireguard`, `dht`, `quic`, `unknown`. For Discord voice, `discord,stun` is a reasonable starting filter, not a guaranteed working strategy.
+- **Additional UDP Strategy** accepts only `--payload=...` and `--lua-desync=...` arguments. Use syntax verified against the exact installed zapret2 build; general shell syntax, paths, and arbitrary dvtws2 flags are intentionally not accepted by this field.
+- All three additional UDP fields must be configured together. Leaving all three empty preserves the current UDP behavior. If the normal QUIC strategy is enabled, the custom port list may not contain port 443.
+- The profile inherits the current include/exclude host-list settings. Source Networks and WAN interface matching are applied to the corresponding `ipfw divert` rule.
+
+This feature adds one firewall rule for the entire additional port list, not one rule per port or range. The rule remains within the plugin's reserved range (19000–19010). This does not by itself prove a supplied desynchronization strategy is effective; test first on a non-critical OPNsense instance or during a maintenance window.
+
 ## Quick start
 
 1. **Services → Zapret DPI Bypass → Diagnostics → Blockcheck.** Enter a domain that's blocked on your ISP (e.g., `rutracker.org`, or any site you can't reach). Click **Run**. Wait 1–3 minutes — the plugin runs upstream's `blockcheck2` against ~50 strategies and reports the winning ones.
