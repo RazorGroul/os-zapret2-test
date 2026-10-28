@@ -46,6 +46,31 @@ DIVERT_PORT=989
 UDP_PORTS=""
 UDP_FILTER_L7=""
 UDP_ARGS=""
+YOUTUBE_TCP_ENABLED="0"
+YOUTUBE_TCP_ARGS=""
+YOUTUBE_QUIC_ENABLED="0"
+YOUTUBE_QUIC_ARGS=""
+DISCORD_TCP_ENABLED="0"
+DISCORD_TCP_ARGS=""
+YOUTUBE_HOSTLIST="${test_root}/youtube-hostlist.txt"
+DISCORD_HOSTLIST="${test_root}/discord-hostlist.txt"
+printf '%s\n' 'youtube.com' > "${YOUTUBE_HOSTLIST}"
+printf '%s\n' 'discord.com' > "${DISCORD_HOSTLIST}"
+
+# Managed TCP profiles add interception ports without requiring manual edits
+# to the generic TCP port list.
+PORTS="80,443"
+DISCORD_TCP_ENABLED="1"
+DISCORD_TCP_ARGS="--payload=tls_client_hello --lua-desync=fake:repeats=2"
+QUIC_ARGS=""
+validate_ipfw_rule_capacity
+test "${TCP_INTERCEPT_PORTS}" = "80,443,2053,2083,2087,2096,8443"
+install_ipfw_rules igc0
+grep -qF 'add 19002 divert 989 tcp from any to any 2053 out not diverted not sockarg xmit igc0' "${ipfw_log}"
+grep -qF 'add 19006 divert 989 tcp from any to any 8443 out not diverted not sockarg xmit igc0' "${ipfw_log}"
+DISCORD_TCP_ENABLED="0"
+DISCORD_TCP_ARGS=""
+: > "${ipfw_log}"
 
 PORTS="1,2,3,4,5,6,7,8,9,10,11"
 QUIC_ARGS=""
