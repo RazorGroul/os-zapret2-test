@@ -237,7 +237,8 @@ validate_udp_configuration() {
         return 1
     fi
 
-    # Keep the L7 filter to zapret2's documented protocol names.
+    # Normalize protocol names, then keep the filter to documented values.
+    UDP_FILTER_L7=$(printf '%s' "${UDP_FILTER_L7}" | tr '[:upper:]' '[:lower:]')
     case "${UDP_FILTER_L7}" in
         *[!a-z0-9,_-]*|,*|*,|*,,*)
             echo "invalid UDP L7 filter syntax: ${UDP_FILTER_L7}" >&2
