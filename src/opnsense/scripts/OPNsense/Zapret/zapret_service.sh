@@ -889,17 +889,14 @@ EOF
 
 build_tcp_intercept_ports() {
     local combined="${PORTS:-}"
-    local port
+    local port saved_ifs="${IFS}"
 
-    # Managed TCP profiles require their own interception ports. Append only
-    # ports not already present so the reserved rule count remains deterministic.
+    # Named TCP profiles require interception on their own ports.
     if [ "${YOUTUBE_TCP_ENABLED:-0}" = "1" ] || [ "${DISCORD_TCP_ENABLED:-0}" = "1" ]; then
-        for port in 443; do
-            case ",${combined}," in
-                *,"${port}",*) ;;
-                *) combined="${combined:+${combined},}${port}" ;;
-            esac
-        done
+        case ",${combined}," in
+            *,443,*) ;;
+            *) combined="${combined:+${combined},}443" ;;
+        esac
     fi
 
     if [ "${DISCORD_TCP_ENABLED:-0}" = "1" ]; then
@@ -911,6 +908,51 @@ build_tcp_intercept_ports() {
         done
     fi
 
+    IFS=","
+    for port in ${CUSTOM_TCP_PORTS}; do
+        case ",${combined}," in
+            *,"${port}",*) ;;
+            *) combined="${combined:+${combined},}${port}" ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+    printf '%s\n' "${combined}"
+}
+
+build_udp_intercept_ports() {
+    local combined=""
+    local port count=0 saved_ifs="${IFS}"
+
+    # Every UDP profile shares one divert rule; dvtws2 selects a profile
+    # based on its own ordered --filter-udp and --filter-l7 filters.
+    if [ -n "${QUIC_ARGS:-}" ] || [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; then
+        combined="443"
+    fi
+
+    IFS=","
+    for port in ${UDP_PORTS}; do
+        case ",${combined}," in
+            *,"${port}",*) ;;
+            *) combined="${combined:+${combined},}${port}" ;;
+        esac
+    done
+    for port in ${CUSTOM_UDP_PORTS}; do
+        case ",${combined}," in
+            *,"${port}",*) ;;
+            *) combined="${combined:+${combined},}${port}" ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+
+    IFS=","
+    for port in ${combined}; do
+        count=$((count + 1))
+    done
+    IFS="${saved_ifs}"
+    if [ "${count}" -gt 30 ]; then
+        echo "combined UDP interception list exceeds ipfw's 30-item limit" >&2
+        return 1
+    fi
     printf '%s\n' "${combined}"
 }
 
@@ -923,8 +965,10 @@ validate_ipfw_rule_capacity() {
     validate_ipset_configuration || return 1
     validate_managed_profiles || return 1
     validate_udp_configuration || return 1
+    validate_custom_profiles || return 1
 
     TCP_INTERCEPT_PORTS=$(build_tcp_intercept_ports)
+    UDP_INTERCEPT_PORTS=$(build_udp_intercept_ports) || return 1
 
     IFS=","
     for port in ${TCP_INTERCEPT_PORTS}; do
@@ -932,10 +976,7 @@ validate_ipfw_rule_capacity() {
     done
     IFS="${IFS_SAVED}"
 
-    if [ -n "${QUIC_ARGS}" ] || [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; then
-        rule_count=$((rule_count + 1))
-    fi
-    if [ -n "${UDP_PORTS}" ]; then
+    if [ -n "${UDP_INTERCEPT_PORTS}" ]; then
         rule_count=$((rule_count + 1))
     fi
 
