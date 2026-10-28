@@ -214,6 +214,15 @@ expect_invalid '[{"enabled":true,"name":"bad-range","order":1,"transport":"udp",
 expect_invalid '[{"enabled":true,"name":"unsafe","order":1,"transport":"udp","ports":"19294-19344","l7":["discord"],"strategy":"--payload=stun;touch /tmp/x --lua-desync=fake"}]'
 expect_invalid '[{"enabled":true,"name":"hostless-udp","order":1,"transport":"udp","ports":"19294-19344","l7":["discord","stun"],"domains":["voice.example"],"strategy":"--payload=stun --lua-desync=fake"}]'
 
+# Limit repeated per-domain jq calls by bounding each custom include/exclude list.
+"${JQ_BIN}" -cn --argjson n 257 '[
+  {"enabled":true,"name":"too-many-domains","order":1,"transport":"tcp","ports":"8443","l7":["tls"],"domains":[range(0; $n) | "entry.example"],"strategy":"--payload=tls_client_hello --lua-desync=fake:repeats=1"}
+]' > "${CUSTOM_PROFILES_FILE}"
+if validate_custom_profiles >/dev/null 2>&1; then
+    echo "custom profile accepted more than 256 domain entries" >&2
+    exit 1
+fi
+
 huge=9
 i=1
 while [ "${i}" -lt 300 ]; do
