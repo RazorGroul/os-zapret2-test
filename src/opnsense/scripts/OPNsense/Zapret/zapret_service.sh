@@ -214,6 +214,7 @@ validate_strategy_arguments() {
     local value="$2"
     local saved_ifs="${IFS}"
     local token
+    local value_without_spaces
     local saw_desync=0
 
     if [ -z "${value}" ]; then
@@ -221,11 +222,14 @@ validate_strategy_arguments() {
         return 1
     fi
 
-    # The value is later split into argv by /bin/sh. Restrict characters to
-    # the small grammar used by --payload and --lua-desync, excluding paths,
-    # shell operators, quotes, substitutions, globs, and redirections.
-    case "${value}" in
-        *[!a-zA-Z0-9_,.:=+ \-]*)
+    # The value is later split into argv by /bin/sh. Allow ordinary
+    # spaces only as argument separators, and validate the remaining
+    # characters with a POSIX shell pattern (hyphen is the final class item).
+    # This excludes paths, shell operators, quotes, substitutions, globs,
+    # and redirections without relying on an escaped hyphen in a bracket set.
+    value_without_spaces=$(printf '%s' "${value}" | tr -d ' ')
+    case "${value_without_spaces}" in
+        *[!a-zA-Z0-9_,.:=+-]*)
             echo "${profile} strategy contains unsupported characters" >&2
             return 1
             ;;
