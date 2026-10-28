@@ -85,6 +85,16 @@ The Settings page can optionally divert one additional set of UDP ports or range
 
 This feature adds one firewall rule for the entire additional port list, not one rule per port or range. The rule remains within the plugin's reserved range (19000–19010). This does not by itself prove a supplied desynchronization strategy is effective; test first on a non-critical OPNsense instance or during a maintenance window.
 
+## IPSet include and exclude filters
+
+The Settings page can optionally pass zapret2 `--ipset=` and `--ipset-exclude=` filters to every configured profile. Files must contain one IPv4/IPv6 address or CIDR per line. Blank lines and comments beginning with `#` are ignored. The plugin validates the file before installing divert rules, rejects unsafe filenames, malformed CIDRs, missing/empty files, and files larger than 10 MiB or 100,000 entries.
+
+- **Include filter** restricts bypass processing to destination IP addresses contained in the selected file. For the legacy list, copy the list you intend to use to `/usr/local/etc/zapret2/ipset-all.txt`, then enable the filter and keep the filename as `ipset-all.txt`.
+- **Exclude filter** skips destination IP addresses contained in the selected file. The plugin provides `ipset-exclude-default.txt` with common local/private, link-local, multicast, and carrier-grade NAT ranges. To use your own legacy exclude list, copy it to `/usr/local/etc/zapret2/ipset-exclude.txt`, then select that filename in Settings.
+- Filenames must be simple names inside `/usr/local/etc/zapret2/`; directory paths and `..` traversal are rejected. Both switches default to off so existing installations keep their prior behavior.
+
+An include IPSet can change which CDN addresses are processed and therefore should be enabled only after confirming that the list is appropriate for the intended services.
+
 ## Quick start
 
 1. **Services → Zapret DPI Bypass → Diagnostics → Blockcheck.** Enter a domain that's blocked on your ISP (e.g., `rutracker.org`, or any site you can't reach). Click **Run**. Wait 1–3 minutes — the plugin runs upstream's `blockcheck2` against ~50 strategies and reports the winning ones.
