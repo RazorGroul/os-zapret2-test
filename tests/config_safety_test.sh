@@ -71,4 +71,9 @@ expect_rejected "${test_root}/multiline.conf"
 : > "${test_root}/empty.conf"
 expect_rejected "${test_root}/empty.conf"
 
+# Generated config files have a hard size cap to avoid pathological source
+# parsing or huge shell argument strings coming from a GUI field.
+awk 'BEGIN { printf "EXTRA_ARGS=\\""; for (i = 0; i < 65550; i++) printf "x"; print "\\""; }' > "${test_root}/oversized.conf"
+expect_rejected "${test_root}/oversized.conf"
+
 echo "zapret shell config safety tests: ok"
