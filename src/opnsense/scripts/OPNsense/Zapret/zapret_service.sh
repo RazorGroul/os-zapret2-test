@@ -315,6 +315,10 @@ validate_udp_configuration() {
     local token
 
     raw_ports=$(printf '%s' "${raw_ports}" | tr -d '[:space:]')
+    if [ "${#raw_ports}" -gt 512 ]; then
+        echo "Additional UDP Ports exceeds the 512-character safety limit" >&2
+        return 1
+    fi
 
     if [ -z "${raw_ports}" ]; then
         if [ -n "${UDP_ARGS:-}" ] || [ -n "${UDP_FILTER_L7:-}" ]; then
@@ -435,6 +439,11 @@ validate_tcp_ports() {
     local item normalized=""
     local saved_ifs="${IFS}"
 
+    if [ "${#raw}" -gt 512 ]; then
+        echo "TCP Ports exceeds the 512-character safety limit" >&2
+        return 1
+    fi
+
     case "${raw}" in
         ""|,*|*,|*,,*|*[!0-9,]*)
             echo "TCP Ports must be a comma-separated list of port numbers from 1 to 65535" >&2
@@ -489,6 +498,10 @@ normalize_port_spec() {
     local saved_ifs="${IFS}"
 
     raw=$(printf '%s' "${raw}" | tr -d '[:space:]')
+    if [ "${#raw}" -gt 512 ]; then
+        echo "${label} exceeds the 512-character safety limit" >&2
+        return 1
+    fi
     case "${raw}" in
         ""|,*|*,|*,,*|*[!0123456789,-]*)
             echo "${label} must be a comma-separated list of ports/ranges" >&2
@@ -752,8 +765,8 @@ validate_custom_profiles() {
             (.transport | type == "string") and
             (.ports | type == "string") and
             (.l7 | (type == "array" and all(.[]; type == "string") and length > 0)) and
-            ((.domains // []) | (type == "array" and all(.[]; type == "string"))) and
-            ((.exclude_domains // []) | (type == "array" and all(.[]; type == "string"))) and
+            ((.domains // []) | (type == "array" and length <= 256 and all(.[]; type == "string"))) and
+            ((.exclude_domains // []) | (type == "array" and length <= 256 and all(.[]; type == "string"))) and
             ((.ipset // "inherit") | type == "string") and
             (.strategy | type == "string")
         )
