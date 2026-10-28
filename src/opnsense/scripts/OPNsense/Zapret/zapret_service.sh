@@ -257,7 +257,7 @@ validate_udp_configuration() {
     # Only payload selectors and Lua desync actions are accepted here.
     # The grammar excludes quotes, shell operators, substitutions and globs.
     case "${UDP_ARGS}" in
-        *[!a-zA-Z0-9_,.:=+/@%#\\ -]*)
+        *[!a-zA-Z0-9_,.:=+/@%#\ -]*)
             echo "UDP strategy contains unsupported characters" >&2
             return 1
             ;;
