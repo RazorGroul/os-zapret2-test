@@ -95,7 +95,7 @@
         <id>zapret.strategy.udpargs</id>
         <label>Additional UDP Strategy</label>
         <type>text</type>
-        <help><![CDATA[Paste only verified zapret2 profile arguments of the form <code>--payload=...</code>, <code>--lua-desync=...</code>, and optional <code>--out-range=...</code>, separated by spaces. Do not include <code>--new</code>, <code>--filter-udp</code>, <code>--filter-l7</code>, shell syntax, or file paths. Required together with Additional UDP Ports and UDP L7 Protocol Filter. Example structure: <code>--payload=stun --lua-desync=fake:blob=fake_default_quic:repeats=6</code> (strategy is illustrative; verify it with your zapret2 build and traffic).]]></help>
+        <help><![CDATA[Paste only verified zapret2 profile arguments of the form <code>--payload=...</code>, <code>--lua-desync=...</code>, and optional <code>--out-range=...</code>, separated by spaces. Do not include <code>--new</code>, <code>--filter-udp</code>, <code>--filter-l7</code>, shell syntax, or file paths. Required together with Additional UDP Ports and UDP L7 Protocol Filter. When the L7 filter includes <code>discord</code>, the service uses the dedicated Discord hostlist. Example structure: <code>--payload=stun --lua-desync=fake:blob=fake_default_quic:repeats=6</code> (strategy is illustrative; verify it with your zapret2 build and traffic).]]></help>
     </field>
     <field>
         <id>zapret.strategy.extraargs</id>
