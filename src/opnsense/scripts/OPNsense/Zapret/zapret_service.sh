@@ -139,24 +139,180 @@ configure_ipfw_reinject() {
     /sbin/pfctl -e >/dev/null 2>&1
 }
 
+validate_udp_configuration() {
+    # Additional UDP traffic is opt-in. Require ports, an L7 filter, and a
+    # strategy together so an accidental partial form submission cannot
+    # divert packets into a profile that does not process them.
+    local raw_ports="${UDP_PORTS:-}"
+    local normalized_ports=""
+    local item start end canonical
+    local count=0
+    local includes_443=0
+    local saved_ifs="${IFS}"
+    local token
+    local saw_desync=0
+
+    raw_ports=$(printf '%s' "${raw_ports}" | tr -d '[:space:]')
+
+    if [ -z "${raw_ports}" ]; then
+        if [ -n "${UDP_ARGS:-}" ] || [ -n "${UDP_FILTER_L7:-}" ]; then
+            echo "Additional UDP Strategy and L7 filter require Additional UDP Ports" >&2
+            return 1
+        fi
+        UDP_PORTS=""
+        return 0
+    fi
+
+    if [ -z "${UDP_ARGS:-}" ] || [ -z "${UDP_FILTER_L7:-}" ]; then
+        echo "Additional UDP Ports require both a UDP L7 filter and UDP strategy" >&2
+        return 1
+    fi
+
+    case "${raw_ports}" in
+        *[!0-9,-]*|,*|*,|*,,*)
+            echo "invalid Additional UDP Ports syntax: ${raw_ports}" >&2
+            return 1
+            ;;
+    esac
+
+    # FreeBSD ipfw accepts up to 30 comma-separated port/range items in one
+    # rule. Validate and canonicalize numbers before they are used in rules.
+    IFS=","
+    for item in ${raw_ports}; do
+        count=$((count + 1))
+        if [ "${count}" -gt 30 ]; then
+            IFS="${saved_ifs}"
+            echo "Additional UDP Ports supports at most 30 ports or ranges" >&2
+            return 1
+        fi
+
+        case "${item}" in
+            *-*)
+                start=${item%%-*}
+                end=${item#*-}
+                case "${end}" in
+                    *-*) IFS="${saved_ifs}"; echo "invalid UDP port range: ${item}" >&2; return 1 ;;
+                esac
+                ;;
+            *)
+                start="${item}"
+                end="${item}"
+                ;;
+        esac
+
+        case "${start}" in ''|*[!0-9]*) IFS="${saved_ifs}"; echo "invalid UDP port: ${item}" >&2; return 1 ;; esac
+        case "${end}" in ''|*[!0-9]*) IFS="${saved_ifs}"; echo "invalid UDP port: ${item}" >&2; return 1 ;; esac
+
+        # Strip leading zeroes before numeric comparisons to avoid octal arithmetic.
+        start=$(printf '%s' "${start}" | sed 's/^0*//')
+        end=$(printf '%s' "${end}" | sed 's/^0*//')
+        [ -n "${start}" ] || start=0
+        [ -n "${end}" ] || end=0
+
+        if [ "${start}" -lt 1 ] || [ "${end}" -gt 65535 ] || [ "${start}" -gt "${end}" ]; then
+            IFS="${saved_ifs}"
+            echo "UDP ports and ranges must be within 1-65535 and ranges must be ascending: ${item}" >&2
+            return 1
+        fi
+
+        if [ "${start}" -le 443 ] && [ "${end}" -ge 443 ]; then
+            includes_443=1
+        fi
+
+        if [ "${start}" -eq "${end}" ]; then
+            canonical="${start}"
+        else
+            canonical="${start}-${end}"
+        fi
+        if [ -n "${normalized_ports}" ]; then
+            normalized_ports="${normalized_ports},${canonical}"
+        else
+            normalized_ports="${canonical}"
+        fi
+    done
+    IFS="${saved_ifs}"
+
+    if [ "${includes_443}" -eq 1 ] && [ -n "${QUIC_ARGS:-}" ]; then
+        echo "Additional UDP Ports overlaps UDP/443 while the QUIC strategy is enabled; remove 443 from one profile" >&2
+        return 1
+    fi
+
+    # Keep the L7 filter to zapret2's documented protocol names.
+    case "${UDP_FILTER_L7}" in
+        *[!a-z0-9,_-]*|,*|*,|*,,*)
+            echo "invalid UDP L7 filter syntax: ${UDP_FILTER_L7}" >&2
+            return 1
+            ;;
+    esac
+    IFS=","
+    for token in ${UDP_FILTER_L7}; do
+        case "${token}" in
+            discord|stun|wireguard|dht|quic|unknown) ;;
+            *) IFS="${saved_ifs}"; echo "unsupported UDP L7 protocol: ${token}" >&2; return 1 ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+
+    # Only payload selectors and Lua desync actions are accepted here.
+    # The grammar excludes quotes, shell operators, substitutions and globs.
+    case "${UDP_ARGS}" in
+        *[!a-zA-Z0-9_,.:=+/@%# -]*)
+            echo "UDP strategy contains unsupported characters" >&2
+            return 1
+            ;;
+    esac
+
+    IFS=' 	
+'
+    for token in ${UDP_ARGS}; do
+        case "${token}" in
+            --payload=*)
+                [ -n "${token#--payload=}" ] || { IFS="${saved_ifs}"; echo "empty --payload value in UDP strategy" >&2; return 1; }
+                ;;
+            --lua-desync=*)
+                [ -n "${token#--lua-desync=}" ] || { IFS="${saved_ifs}"; echo "empty --lua-desync value in UDP strategy" >&2; return 1; }
+                saw_desync=1
+                ;;
+            *)
+                IFS="${saved_ifs}"
+                echo "UDP strategy accepts only --payload=... and --lua-desync=... arguments; rejected token: ${token}" >&2
+                return 1
+                ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+
+    if [ "${saw_desync}" -ne 1 ]; then
+        echo "UDP strategy must contain at least one --lua-desync=... argument" >&2
+        return 1
+    fi
+
+    UDP_PORTS="${normalized_ports}"
+    return 0
+}
+
 validate_ipfw_rule_capacity() {
     local rule_capacity=$((RULE_MAX - RULE_BASE + 1))
     local rule_count=0
     local IFS_SAVED="${IFS}"
-    IFS=","
 
+    validate_udp_configuration || return 1
+
+    IFS=","
     for port in ${PORTS}; do
         rule_count=$((rule_count + 1))
     done
-
     IFS="${IFS_SAVED}"
 
     if [ -n "${QUIC_ARGS}" ]; then
         rule_count=$((rule_count + 1))
     fi
+    if [ -n "${UDP_PORTS}" ]; then
+        rule_count=$((rule_count + 1))
+    fi
 
     if [ "${rule_count}" -gt "${rule_capacity}" ]; then
-        echo "configured TCP and QUIC profiles require ${rule_count} ipfw rules; reserved range ${RULE_BASE}-${RULE_MAX} has room for ${rule_capacity}" >&2
+        echo "configured TCP, QUIC, and additional UDP profiles require ${rule_count} ipfw rules; reserved range ${RULE_BASE}-${RULE_MAX} has room for ${rule_capacity}" >&2
         return 1
     fi
 
@@ -164,8 +320,8 @@ validate_ipfw_rule_capacity() {
 }
 
 # Install ipfw divert rules — one per TCP port, plus one for UDP/443 when a
-# QUIC strategy is configured. Exact form from upstream zapret's pfSense
-# script (init.d/pfsense/zapret.sh:22):
+# QUIC strategy is configured and one for the optional additional UDP port
+# list. UDP port lists can contain up to 30 comma-separated ports/ranges.
 #
 #   divert 989 tcp from any to any 80,443 out not diverted not sockarg
 #
@@ -219,33 +375,72 @@ install_ipfw_rules() {
         if ! /sbin/ipfw -f add ${rulenum} divert ${DIVERT_PORT} tcp \
             from "${src_spec}" to any ${port} \
             out not diverted not sockarg xmit ${wan_dev} >/dev/null 2>&1; then
+            remove_ipfw_rules
+            IFS="${IFS_SAVED}"
             echo "failed to install ipfw divert rule for port ${port} from '${src_spec}' — check Source Networks syntax" >&2
+            return 1
         fi
 
         if [ -n "${SOURCE_NETS}" ]; then
-            /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} tcp \
+            if ! /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} tcp \
                 from me to any ${port} \
-                out not diverted not sockarg xmit ${wan_dev}
+                out not diverted not sockarg xmit ${wan_dev}; then
+                remove_ipfw_rules
+                IFS="${IFS_SAVED}"
+                echo "failed to install ipfw rule for firewall-originated TCP traffic on port ${port}" >&2
+                return 1
+            fi
         fi
 
         rulenum=$((rulenum + 1))
     done
 
-    # QUIC / HTTP3 profile: UDP 443. Installed only when a QUIC strategy is
-    # configured, so users who never fill in the QUIC field keep exactly the
-    # pre-1.8.3 rule set. It takes the next free number after the TCP ports
-    # (19002 with the default PORTS="80,443").
+    # QUIC / HTTP3 profile: UDP 443.
     if [ -n "${QUIC_ARGS}" ]; then
         if ! /sbin/ipfw -f add ${rulenum} divert ${DIVERT_PORT} udp \
             from "${src_spec}" to any 443 \
             out not diverted not sockarg xmit ${wan_dev} >/dev/null 2>&1; then
+            remove_ipfw_rules
+            IFS="${IFS_SAVED}"
             echo "failed to install ipfw QUIC divert rule from '${src_spec}' — check Source Networks syntax" >&2
+            return 1
         fi
 
         if [ -n "${SOURCE_NETS}" ]; then
-            /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} udp \
+            if ! /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} udp \
                 from me to any 443 \
-                out not diverted not sockarg xmit ${wan_dev}
+                out not diverted not sockarg xmit ${wan_dev}; then
+                remove_ipfw_rules
+                IFS="${IFS_SAVED}"
+                echo "failed to install ipfw QUIC rule for firewall-originated traffic" >&2
+                return 1
+            fi
+        fi
+
+        rulenum=$((rulenum + 1))
+    fi
+
+    # Optional additional UDP profile. A validated port list consumes one
+    # firewall rule regardless of how many ranges it contains.
+    if [ -n "${UDP_PORTS}" ]; then
+        if ! /sbin/ipfw -f add ${rulenum} divert ${DIVERT_PORT} udp \
+            from "${src_spec}" to any "${UDP_PORTS}" \
+            out not diverted not sockarg xmit ${wan_dev} >/dev/null 2>&1; then
+            remove_ipfw_rules
+            IFS="${IFS_SAVED}"
+            echo "failed to install additional UDP divert rule for ${UDP_PORTS} from '${src_spec}'" >&2
+            return 1
+        fi
+
+        if [ -n "${SOURCE_NETS}" ]; then
+            if ! /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} udp \
+                from me to any "${UDP_PORTS}" \
+                out not diverted not sockarg xmit ${wan_dev}; then
+                remove_ipfw_rules
+                IFS="${IFS_SAVED}"
+                echo "failed to install additional UDP rule for firewall-originated traffic" >&2
+                return 1
+            fi
         fi
 
         rulenum=$((rulenum + 1))
@@ -324,6 +519,12 @@ start_service() {
         args="${args} --new --filter-udp=443 --filter-l7=quic${hostlist_noauto_args} ${QUIC_ARGS}"
     fi
 
+    # Optional additional UDP profile (e.g. Discord voice). It inherits the
+    # same include/exclude host-list behavior as the QUIC profile.
+    if [ -n "${UDP_PORTS}" ]; then
+        args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${hostlist_noauto_args} ${UDP_ARGS}"
+    fi
+
     [ -n "${EXTRA_ARGS}" ] && args="${args} ${EXTRA_ARGS}"
 
     # Run dvtws2 under daemon(8) -r so a crash auto-restarts within 1s.
@@ -357,7 +558,10 @@ start_service() {
         fi
     fi
 
-    install_ipfw_rules "${wan_dev}" || exit 1
+    if ! install_ipfw_rules "${wan_dev}"; then
+        stop_service
+        exit 1
+    fi
 
     # Start the safety watchdog under daemon(8) too. It probes a control URL
     # every minute and stops the service if 3 consecutive checks fail —
