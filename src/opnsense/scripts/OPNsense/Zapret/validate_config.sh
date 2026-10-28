@@ -62,6 +62,13 @@ function allowed(name) {
     valid = 1
 }
 END {
+    split("ZAPRET_ENABLED WAN_IF DIVERT_PORT PORTS SOURCE_NETS HTTP_ARGS HTTPS_ARGS QUIC_ARGS UDP_PORTS UDP_FILTER_L7 UDP_ARGS YOUTUBE_TCP_ENABLED YOUTUBE_TCP_ARGS YOUTUBE_QUIC_ENABLED YOUTUBE_QUIC_ARGS DISCORD_TCP_ENABLED DISCORD_TCP_ARGS IPSET_INCLUDE_ENABLED IPSET_INCLUDE_FILE IPSET_EXCLUDE_ENABLED IPSET_EXCLUDE_FILE EXTRA_ARGS HOSTLIST_MODE HOSTLIST_USE_LEGACY_DOMAINS HOSTLIST_USE_LEGACY_EXCLUDES", required, " ")
+    for (i = 1; i <= length(required); i++) {
+        if (!(required[i] in seen)) {
+            printf "zapret config validator: missing required variable %s\\n", required[i] > "/dev/stderr"
+            exit 1
+        }
+    }
     if (!valid && !error) exit 1
 }
 ' "${CONFIG_FILE}"
