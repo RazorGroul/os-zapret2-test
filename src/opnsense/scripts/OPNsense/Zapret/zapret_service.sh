@@ -805,7 +805,7 @@ validate_custom_profiles() {
 
     rows=$("${JQ_BIN}" -r '
         sort_by(.order)[] | select(.enabled == true) |
-        [.enabled|tostring, .name, (.order|tostring), .transport, .ports,
+        [(.enabled|tostring), .name, (.order|tostring), .transport, .ports,
          (.l7|join(",")), .strategy, (.ipset // "inherit"),
          ((.domains // [])|length|tostring),
          ((.exclude_domains // [])|length|tostring)] | join("|")
