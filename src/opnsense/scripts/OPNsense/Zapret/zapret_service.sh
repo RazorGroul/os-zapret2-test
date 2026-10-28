@@ -37,6 +37,10 @@ YOUTUBE_HOSTLIST="${ZAPRET_DIR}/hostlist-youtube.txt"
 DISCORD_HOSTLIST="${ZAPRET_DIR}/hostlist-discord.txt"
 AUTOHOSTLIST="${ZAPRET_DIR}/autohostlist.txt"
 IPSET_VALIDATOR="/usr/local/opnsense/scripts/OPNsense/Zapret/validate_ipset.awk"
+CUSTOM_PROFILES_FILE="${ZAPRET_DIR}/custom-profiles.json"
+CUSTOM_PROFILE_LIST_DIR="${ZAPRET_DIR}/custom-hostlists"
+JQ_BIN="/usr/local/bin/jq"
+[ -x "${JQ_BIN}" ] || JQ_BIN=$(command -v jq 2>/dev/null || true)
 LUA_LIB="${ZAPRET_DIR}/lua/zapret-lib.lua"
 LUA_ANTIDPI="${ZAPRET_DIR}/lua/zapret-antidpi.lua"
 
