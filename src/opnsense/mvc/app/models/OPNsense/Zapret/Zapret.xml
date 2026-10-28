@@ -70,7 +70,7 @@
             <tcpstrategy type="TextField">
                 <Required>N</Required>
                 <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
-                <ValidationMessage>Use only zapret2 --payload and --lua-desync arguments.</ValidationMessage>
+                <ValidationMessage>Use only zapret2 --payload, --lua-desync, and optional --out-range arguments.</ValidationMessage>
             </tcpstrategy>
             <quicenabled type="BooleanField">
                 <Default>0</Default>
@@ -79,7 +79,7 @@
             <quicstrategy type="TextField">
                 <Required>N</Required>
                 <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
-                <ValidationMessage>Use only zapret2 --payload and --lua-desync arguments.</ValidationMessage>
+                <ValidationMessage>Use only zapret2 --payload, --lua-desync, and optional --out-range arguments.</ValidationMessage>
             </quicstrategy>
             <domains type="TextField">
                 <Required>N</Required>
@@ -94,7 +94,7 @@
             <tcpstrategy type="TextField">
                 <Required>N</Required>
                 <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
-                <ValidationMessage>Use only zapret2 --payload and --lua-desync arguments.</ValidationMessage>
+                <ValidationMessage>Use only zapret2 --payload, --lua-desync, and optional --out-range arguments.</ValidationMessage>
             </tcpstrategy>
             <domains type="TextField">
                 <Required>N</Required>
