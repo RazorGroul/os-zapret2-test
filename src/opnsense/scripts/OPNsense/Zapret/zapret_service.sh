@@ -641,6 +641,13 @@ prepare_custom_profile_hostlists() {
     local count i enabled name transport l7 hostname_supported
     local domains_count excludes_count domains_file excludes_file
 
+    # A missing config means there are no custom profiles to keep; clean
+    # only generated plugin-owned files during the preparation/cleanup phase.
+    if [ ! -f "${CUSTOM_PROFILES_FILE}" ]; then
+        cleanup_custom_profile_lists
+        return 0
+    fi
+
     if [ -L "${CUSTOM_PROFILE_LIST_DIR}" ]; then
         echo "custom profile hostlist directory must not be a symlink" >&2
         return 1
@@ -652,7 +659,6 @@ prepare_custom_profile_hostlists() {
     mkdir -p "${CUSTOM_PROFILE_LIST_DIR}" || return 1
     rm -f "${CUSTOM_PROFILE_LIST_DIR}"/custom-profile-*.txt
 
-    [ -f "${CUSTOM_PROFILES_FILE}" ] || return 0
     count=$("${JQ_BIN}" 'length' "${CUSTOM_PROFILES_FILE}") || return 1
     if [ "${count}" -eq 0 ]; then
         cleanup_custom_profile_lists
@@ -720,7 +726,6 @@ validate_custom_profiles() {
         return 1
     fi
     if [ ! -f "${CUSTOM_PROFILES_FILE}" ]; then
-        cleanup_custom_profile_lists
         return 0
     fi
 
