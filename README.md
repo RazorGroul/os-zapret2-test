@@ -142,7 +142,7 @@ Example:
 ]
 ```
 
-- `enabled` is a JSON boolean; `name` contains only letters, numbers, hyphens, or underscores. Names and integer `order` values must be unique. At most eight profile objects and 64 KiB of JSON are accepted.
+- `enabled` is a JSON boolean; `name` contains only letters, numbers, hyphens, or underscores. Names and integer `order` values must be unique. At most eight profile objects, 64 KiB of JSON, 256 domain entries per include/exclude array, and 512 characters per TCP/UDP port specification are accepted.
 - `transport` is `tcp` or `udp`. `ports` accepts comma-separated numbers/ranges from 1 to 65535, with ascending ranges and at most 30 entries per profile. Enabled TCP profile ports are added to the interception rules. All built-in and custom UDP ports are combined into one validated WAN-scoped divert rule, while the dvtws2 profiles retain their own filters.
 - `l7` is an array of protocol names. TCP accepts `http`, `tls`, or `unknown`; UDP accepts `quic`, `wireguard`, `dht`, `discord`, `stun`, or `unknown`.
 - `domains` and `exclude_domains` are optional hostname arrays. They are allowed for TCP profiles and pure-QUIC UDP profiles only. Non-QUIC UDP flows usually cannot provide a hostname, so use IPSet filters to scope Discord Voice/STUN or other UDP profiles.
