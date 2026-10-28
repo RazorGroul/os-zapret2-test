@@ -458,7 +458,12 @@ start_service() {
         exit 0
     fi
 
-    validate_ipfw_rule_capacity || exit 1
+    if ! validate_ipfw_rule_capacity; then
+        # Fail open: an invalid config must not leave stale divert rules
+        # pointing to a dead or mismatched dvtws2 listener.
+        remove_ipfw_rules
+        exit 1
+    fi
 
     # Already running?
     if [ -f "${SUPERVISOR_PIDFILE}" ] && kill -0 "$(cat ${SUPERVISOR_PIDFILE})" 2>/dev/null; then
@@ -637,7 +642,12 @@ repair_service() {
         exit 0
     fi
 
-    validate_ipfw_rule_capacity || exit 1
+    if ! validate_ipfw_rule_capacity; then
+        # If the new config cannot be used, remove interception rules rather
+        # than leave traffic diverted to a stale profile.
+        remove_ipfw_rules
+        exit 1
+    fi
 
     # Repair is intended for events such as WAN DHCP/PPPoE renew where
     # OPNsense may disable or rebuild ipfw while dvtws2 itself keeps running.
