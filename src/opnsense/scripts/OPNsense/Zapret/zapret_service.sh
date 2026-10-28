@@ -34,6 +34,7 @@ DVTWS_BIN="${ZAPRET_DIR}/binaries/my/dvtws2"
 HOSTLIST="${ZAPRET_DIR}/hostlist.txt"
 HOSTLIST_EXCLUDE="${ZAPRET_DIR}/hostlist-exclude.txt"
 AUTOHOSTLIST="${ZAPRET_DIR}/autohostlist.txt"
+IPSET_VALIDATOR="/usr/local/opnsense/scripts/OPNsense/Zapret/validate_ipset.awk"
 LUA_LIB="${ZAPRET_DIR}/lua/zapret-lib.lua"
 LUA_ANTIDPI="${ZAPRET_DIR}/lua/zapret-antidpi.lua"
 
@@ -137,6 +138,69 @@ configure_ipfw_reinject() {
     #    leaves ipfw behind pf and silently breaks the bypass.
     /sbin/pfctl -d >/dev/null 2>&1
     /sbin/pfctl -e >/dev/null 2>&1
+}
+
+validate_ipset_filename() {
+    local filename="$1"
+
+    case "${filename}" in
+        ""|.|..|*..*|*[!a-zA-Z0-9_.-]*)
+            echo "invalid IPSet filename; use a simple filename without directories or '..': ${filename}" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+validate_ipset_file() {
+    local file="$1"
+    local bytes=""
+
+    if [ ! -f "${file}" ] || [ ! -r "${file}" ]; then
+        echo "enabled IPSet file is missing or unreadable: ${file}" >&2
+        return 1
+    fi
+
+    bytes=$(wc -c < "${file}" | tr -d '[:space:]')
+    case "${bytes}" in ''|*[!0-9]*) echo "could not determine IPSet file size: ${file}" >&2; return 1 ;; esac
+    if [ "${bytes}" -gt 10485760 ]; then
+        echo "IPSet file exceeds the 10 MiB safety limit: ${file}" >&2
+        return 1
+    fi
+
+    if [ ! -r "${IPSET_VALIDATOR}" ] || ! awk -f "${IPSET_VALIDATOR}" "${file}"; then
+        echo "IPSet file failed IPv4/IPv6 CIDR validation: ${file}" >&2
+        return 1
+    fi
+    return 0
+}
+
+validate_ipset_configuration() {
+    IPSET_ARGS=""
+    local include_enabled="${IPSET_INCLUDE_ENABLED:-0}"
+    local exclude_enabled="${IPSET_EXCLUDE_ENABLED:-0}"
+    local include_file="${IPSET_INCLUDE_FILE:-ipset-all.txt}"
+    local exclude_file="${IPSET_EXCLUDE_FILE:-ipset-exclude-default.txt}"
+    local file=""
+
+    case "${include_enabled}" in 0|"") ;; 1) ;; *) echo "invalid IPSet include toggle value" >&2; return 1 ;; esac
+    case "${exclude_enabled}" in 0|"") ;; 1) ;; *) echo "invalid IPSet exclude toggle value" >&2; return 1 ;; esac
+
+    if [ "${include_enabled}" = "1" ]; then
+        validate_ipset_filename "${include_file}" || return 1
+        file="${ZAPRET_DIR}/${include_file}"
+        validate_ipset_file "${file}" || return 1
+        IPSET_ARGS="${IPSET_ARGS} --ipset=${file}"
+    fi
+
+    if [ "${exclude_enabled}" = "1" ]; then
+        validate_ipset_filename "${exclude_file}" || return 1
+        file="${ZAPRET_DIR}/${exclude_file}"
+        validate_ipset_file "${file}" || return 1
+        IPSET_ARGS="${IPSET_ARGS} --ipset-exclude=${file}"
+    fi
+
+    return 0
 }
 
 validate_udp_configuration() {
@@ -297,6 +361,7 @@ validate_ipfw_rule_capacity() {
     local rule_count=0
     local IFS_SAVED="${IFS}"
 
+    validate_ipset_configuration || return 1
     validate_udp_configuration || return 1
 
     IFS=","
@@ -495,7 +560,7 @@ start_service() {
     [ -f "${LUA_ANTIDPI}" ]  && args="${args} --lua-init=@${LUA_ANTIDPI}"
 
     # TCP profile: HTTP/HTTPS only.
-    args="${args} --filter-tcp=${PORTS}"
+    args="${args} --filter-tcp=${PORTS}${IPSET_ARGS}"
     [ -n "${HTTP_ARGS}" ]    && args="${args} ${HTTP_ARGS}"
     [ -n "${HTTPS_ARGS}" ]   && args="${args} ${HTTPS_ARGS}"
 
@@ -522,13 +587,13 @@ start_service() {
     # QUIC is a separate UDP profile. Auto-hostlist entries are used as a
     # regular hostlist here, matching upstream <HOSTLIST_NOAUTO> semantics.
     if [ -n "${QUIC_ARGS}" ]; then
-        args="${args} --new --filter-udp=443 --filter-l7=quic${hostlist_noauto_args} ${QUIC_ARGS}"
+        args="${args} --new --filter-udp=443 --filter-l7=quic${hostlist_noauto_args}${IPSET_ARGS} ${QUIC_ARGS}"
     fi
 
     # Optional additional UDP profile (e.g. Discord voice). It inherits the
     # same include/exclude host-list behavior as the QUIC profile.
     if [ -n "${UDP_PORTS}" ]; then
-        args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${hostlist_noauto_args} ${UDP_ARGS}"
+        args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${hostlist_noauto_args}${IPSET_ARGS} ${UDP_ARGS}"
     fi
 
     [ -n "${EXTRA_ARGS}" ] && args="${args} ${EXTRA_ARGS}"
