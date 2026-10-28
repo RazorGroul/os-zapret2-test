@@ -40,6 +40,7 @@ jobs:
           sh tests/zapret_rule_capacity_test.sh
           sh tests/ipset_validation_test.sh
           sh tests/custom_profiles_test.sh
+          sh tests/config_safety_test.sh
 
   build:
     name: Build FreeBSD ${{ matrix.major }} pkg
