@@ -46,8 +46,8 @@ LUA_ANTIDPI="${ZAPRET_DIR}/lua/zapret-antidpi.lua"
 
 # ipfw rule numbers we own. Range 19000-19010 — high enough to avoid
 # OPNsense's own rules, low enough to fire before the default-accept at
-# 65534. One rule number is used per TCP port, followed by at most one
-# UDP/443 rule and one additional UDP port-list rule.
+# 65534. One rule number is used per TCP port; all enabled UDP profiles
+# share one aggregated UDP port-list rule.
 RULE_BASE=19000
 RULE_MAX=$((RULE_BASE + 10))
 
@@ -652,6 +652,10 @@ prepare_custom_profile_hostlists() {
 
     [ -f "${CUSTOM_PROFILES_FILE}" ] || return 0
     count=$("${JQ_BIN}" 'length' "${CUSTOM_PROFILES_FILE}") || return 1
+    if [ "${count}" -eq 0 ]; then
+        cleanup_custom_profile_lists
+        return 0
+    fi
     i=0
     while [ "${i}" -lt "${count}" ]; do
         enabled=$("${JQ_BIN}" -r ".[${i}].enabled" "${CUSTOM_PROFILES_FILE}")
@@ -1177,6 +1181,9 @@ start_service() {
 
     # YouTube / Google TLS profile (TCP/443).
     if [ "${YOUTUBE_TCP_ENABLED:-0}" = "1" ]; then
+        if [ "${profile_started}" = "1" ]; then
+            args="${args} --new"
+        fi
         args="${args} --filter-tcp=443 --filter-l7=tls --hostlist=${YOUTUBE_HOSTLIST}${hostlist_exclude_args}${IPSET_ARGS} ${YOUTUBE_TCP_ARGS}"
         profile_started=1
     fi
