@@ -736,12 +736,13 @@ prepare_custom_profile_hostlists() {
 }
 validate_custom_profiles() {
     local count i enabled name order transport ports l7 strategy ipset
-    local domains_count excludes_count token saved_ifs entry domain_entries exclude_entries
+    local domains_count excludes_count token saved_ifs entry domain_entries exclude_entries cr
     CUSTOM_PROFILE_COUNT=0
     CUSTOM_TCP_PORTS=""
     CUSTOM_UDP_PORTS=""
     CUSTOM_PROFILE_ARGS=""
     CUSTOM_PROFILE_ACTIVE=0
+    cr=$(printf '\\r')
 
     if [ -z "${JQ_BIN}" ] || [ ! -x "${JQ_BIN}" ]; then
         echo "jq is required to validate custom profiles" >&2
@@ -845,6 +846,7 @@ validate_custom_profiles() {
 
         domain_entries=$("${JQ_BIN}" -r ".[${i}].domains[]?" "${CUSTOM_PROFILES_FILE}")
         while IFS= read -r entry; do
+            entry=${entry%"${cr}"}
             [ -n "${entry}" ] || continue
             validate_profile_domain "${entry}" "custom profile ${name} domains" || return 1
         done <<EOF
@@ -853,6 +855,7 @@ EOF
 
         exclude_entries=$("${JQ_BIN}" -r ".[${i}].exclude_domains[]?" "${CUSTOM_PROFILES_FILE}")
         while IFS= read -r entry; do
+            entry=${entry%"${cr}"}
             [ -n "${entry}" ] || continue
             validate_profile_domain "${entry}" "custom profile ${name} exclude_domains" || return 1
         done <<EOF
