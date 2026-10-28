@@ -523,8 +523,8 @@ normalize_port_spec() {
         case "${start}" in ""|*[!0123456789]*) IFS="${saved_ifs}"; echo "invalid port in ${label}: ${item}" >&2; return 1 ;; esac
         case "${end}" in ""|*[!0123456789]*) IFS="${saved_ifs}"; echo "invalid port in ${label}: ${item}" >&2; return 1 ;; esac
 
-        start=$(printf '%s' "${start}" | sed 's/^0*//')
-        end=$(printf '%s' "${end}" | sed 's/^0*//')
+        while [ -n "${start}" ] && [ "${start#0}" != "${start}" ]; do start="${start#0}"; done
+        while [ -n "${end}" ] && [ "${end#0}" != "${end}" ]; do end="${end#0}"; done
         [ -n "${start}" ] || start=0
         [ -n "${end}" ] || end=0
 
