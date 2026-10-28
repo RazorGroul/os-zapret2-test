@@ -363,6 +363,14 @@ validate_udp_configuration() {
         [ -n "${start}" ] || start=0
         [ -n "${end}" ] || end=0
 
+        # POSIX test may fail open on arbitrarily large integer strings.
+        # Port numbers are at most five decimal digits after normalization.
+        if [ "${#start}" -gt 5 ] || [ "${#end}" -gt 5 ]; then
+            IFS="${saved_ifs}"
+            echo "UDP port number is too large: ${item}" >&2
+            return 1
+        fi
+
         if [ "${start}" -lt 1 ] || [ "${end}" -gt 65535 ] || [ "${start}" -gt "${end}" ]; then
             IFS="${saved_ifs}"
             echo "UDP ports and ranges must be within 1-65535 and ranges must be ascending: ${item}" >&2
@@ -408,18 +416,6 @@ validate_udp_configuration() {
     done
     IFS="${saved_ifs}"
 
-    # Discord voice packets do not carry a TLS hostname. When the selected
-    # L7 filter includes Discord, use the dedicated Discord domain list so
-    # user-defined generic hostlist mode cannot accidentally suppress voice.
-    case ",${UDP_FILTER_L7}," in
-        *,discord,*)
-            if [ ! -s "${DISCORD_HOSTLIST}" ]; then
-                echo "Discord hostlist is missing or empty: ${DISCORD_HOSTLIST}" >&2
-                return 1
-            fi
-            ;;
-    esac
-
     validate_strategy_arguments "Additional UDP" "${UDP_ARGS}" || return 1
 
     UDP_PORTS="${normalized_ports}"
@@ -450,6 +446,13 @@ validate_tcp_ports() {
 
         item=$(printf '%s' "${item}" | sed 's/^0*//')
         [ -n "${item}" ] || item=0
+        # Guard before test(1): very long numeric strings can make integer
+        # comparisons fail with an error and otherwise bypass range checks.
+        if [ "${#item}" -gt 5 ]; then
+            IFS="${saved_ifs}"
+            echo "TCP port number is too large: ${item}" >&2
+            return 1
+        fi
         if [ "${item}" -lt 1 ] || [ "${item}" -gt 65535 ]; then
             IFS="${saved_ifs}"
             echo "TCP port must be within 1-65535: ${item}" >&2
@@ -763,10 +766,15 @@ start_service() {
     # Additional UDP profile, for example Discord voice, is independent of
     # UDP/443 unless explicitly configured to overlap it (which is rejected).
     if [ -n "${UDP_PORTS}" ]; then
-        local udp_hostlist_args="${hostlist_noauto_args}"
-        case ",${UDP_FILTER_L7}," in
-            *,discord,*) udp_hostlist_args=" --hostlist=${DISCORD_HOSTLIST}${hostlist_exclude_args}" ;;
-        esac
+        # Hostlists require a hostname parsed from the flow. Discord voice,
+        # STUN, WireGuard, DHT and unknown UDP flows generally have no such
+        # hostname, so attaching a hostlist would prevent the profile from
+        # matching them. Only a pure QUIC profile can safely inherit domain
+        # hostlists; use IPSet filters to scope other UDP profiles by address.
+        local udp_hostlist_args=""
+        if [ "${UDP_FILTER_L7}" = "quic" ]; then
+            udp_hostlist_args="${hostlist_noauto_args}"
+        fi
         args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${udp_hostlist_args}${IPSET_ARGS} ${UDP_ARGS}"
     fi
 
