@@ -106,6 +106,62 @@
     </field>
     <field>
         <type>header</type>
+        <label>YouTube / Google Profiles</label>
+    </field>
+    <field>
+        <id>zapret.youtube.tcpenabled</id>
+        <label>Enable YouTube / Google TLS Profile</label>
+        <type>checkbox</type>
+        <help><![CDATA[Apply the separate TCP/443 strategy to the bundled Google/YouTube domain list before the generic TCP profile. Uses <code>--filter-l7=tls</code>.]]></help>
+    </field>
+    <field>
+        <id>zapret.youtube.tcpstrategy</id>
+        <label>YouTube / Google TCP Strategy</label>
+        <type>text</type>
+        <help><![CDATA[When the TCP profile is enabled, provide verified zapret2 arguments such as <code>--payload=tls_client_hello --lua-desync=...</code>. Do not include <code>--new</code>, filters, hostlists, paths, or shell syntax.]]></help>
+    </field>
+    <field>
+        <id>zapret.youtube.quicenabled</id>
+        <label>Enable YouTube / Google QUIC Profile</label>
+        <type>checkbox</type>
+        <help><![CDATA[Apply the separate UDP/443 QUIC strategy to the bundled Google/YouTube domain list before the generic QUIC profile. Enabling this also installs the shared UDP/443 divert rule.]]></help>
+    </field>
+    <field>
+        <id>zapret.youtube.quicstrategy</id>
+        <label>YouTube / Google QUIC Strategy</label>
+        <type>text</type>
+        <help><![CDATA[When the QUIC profile is enabled, provide verified zapret2 arguments such as <code>--payload=quic_initial --lua-desync=...</code>. Do not include <code>--new</code>, filters, hostlists, paths, or shell syntax.]]></help>
+    </field>
+    <field>
+        <id>zapret.youtube.domains</id>
+        <label>Additional YouTube / Google Domains</label>
+        <type>textbox</type>
+        <help>Optional extra hostlist entries, one per line. These are appended to the bundled list.</help>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Discord TCP Profile</label>
+    </field>
+    <field>
+        <id>zapret.discord.tcpenabled</id>
+        <label>Enable Discord TCP TLS Profile</label>
+        <type>checkbox</type>
+        <help><![CDATA[Apply a separate TLS profile for ports <code>443,2053,2083,2087,2096,8443</code> to the bundled Discord domain list before the generic TCP profile.]]></help>
+    </field>
+    <field>
+        <id>zapret.discord.tcpstrategy</id>
+        <label>Discord TCP Strategy</label>
+        <type>text</type>
+        <help><![CDATA[When the profile is enabled, provide verified zapret2 TLS arguments such as <code>--payload=tls_client_hello --lua-desync=...</code>. Do not include <code>--new</code>, filters, hostlists, paths, or shell syntax.]]></help>
+    </field>
+    <field>
+        <id>zapret.discord.domains</id>
+        <label>Additional Discord Domains</label>
+        <type>textbox</type>
+        <help>Optional extra hostlist entries, one per line. These are appended to the bundled list.</help>
+    </field>
+    <field>
+        <type>header</type>
         <label>IPSet Filters</label>
     </field>
     <field>
