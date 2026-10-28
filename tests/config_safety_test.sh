@@ -93,6 +93,9 @@ expect_rejected "${test_root}/unknown.conf"
 printf '%s\n' 'WAN_IF="igc0"' 'WAN_IF="igc1"' > "${test_root}/duplicate.conf"
 expect_rejected "${test_root}/duplicate.conf"
 
+grep -v '^HOSTLIST_MODE=' "${test_root}/valid.conf" > "${test_root}/missing-required.conf"
+expect_rejected "${test_root}/missing-required.conf"
+
 printf 'HTTP_ARGS="first line\nsecond line"\n' > "${test_root}/multiline.conf"
 expect_rejected "${test_root}/multiline.conf"
 
