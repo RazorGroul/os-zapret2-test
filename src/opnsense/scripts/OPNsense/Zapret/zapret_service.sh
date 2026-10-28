@@ -736,7 +736,7 @@ prepare_custom_profile_hostlists() {
 }
 validate_custom_profiles() {
     local count i enabled name order transport ports l7 strategy ipset
-    local domains_count excludes_count token saved_ifs
+    local domains_count excludes_count token saved_ifs entry domain_entries exclude_entries
     CUSTOM_PROFILE_COUNT=0
     CUSTOM_TCP_PORTS=""
     CUSTOM_UDP_PORTS=""
@@ -770,8 +770,8 @@ validate_custom_profiles() {
             (.transport | type == "string") and
             (.ports | type == "string") and
             (.l7 | (type == "array" and all(.[]; type == "string") and length > 0)) and
-            ((.domains // []) | (type == "array" and length <= 256 and all(.[]; type == "string" and length <= 253 and test("^\\\\^?([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\\\\.([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$")))) and
-            ((.exclude_domains // []) | (type == "array" and length <= 256 and all(.[]; type == "string" and length <= 253 and test("^\\\\^?([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\\\\.([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$")))) and
+            ((.domains // []) | (type == "array" and length <= 256 and all(.[]; type == "string" and length >= 1 and length <= 253 and test("^[A-Za-z0-9.^-]+$")))) and
+            ((.exclude_domains // []) | (type == "array" and length <= 256 and all(.[]; type == "string" and length >= 1 and length <= 253 and test("^[A-Za-z0-9.^-]+$")))) and
             ((.ipset // "inherit") | type == "string") and
             (.strategy | type == "string")
         )
@@ -842,6 +842,22 @@ validate_custom_profiles() {
             echo "custom profile ${name}: hostname lists are supported only for TCP or a pure QUIC UDP profile" >&2
             return 1
         fi
+
+        domain_entries=$("${JQ_BIN}" -r ".[${i}].domains[]?" "${CUSTOM_PROFILES_FILE}")
+        while IFS= read -r entry; do
+            [ -n "${entry}" ] || continue
+            validate_profile_domain "${entry}" "custom profile ${name} domains" || return 1
+        done <<EOF
+${domain_entries}
+EOF
+
+        exclude_entries=$("${JQ_BIN}" -r ".[${i}].exclude_domains[]?" "${CUSTOM_PROFILES_FILE}")
+        while IFS= read -r entry; do
+            [ -n "${entry}" ] || continue
+            validate_profile_domain "${entry}" "custom profile ${name} exclude_domains" || return 1
+        done <<EOF
+${exclude_entries}
+EOF
 
         if [ "${transport}" = "tcp" ]; then
             saved_ifs="${IFS}"
