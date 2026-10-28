@@ -8,6 +8,8 @@ All notable changes to os-zapret2 are documented in this file.
 - Optional additional UDP port/range profile with L7 filtering and strategy fields, intended for use cases such as Discord voice.
 - Validation for UDP port ranges, L7 protocol names, strategy argument grammar, QUIC port overlap, and reserved ipfw-rule capacity.
 - Optional zapret2 IPSet include/exclude filters applied to configured profiles, with strict IPv4/IPv6 CIDR file validation.
+- Managed YouTube/Google TCP and QUIC profiles plus a Discord TCP TLS profile, with dedicated hostlists and automatic TCP port interception.
+- Optional import of the legacy general and excluded-domain lists, disabled by default.
 
 ### Safety
 - Additional UDP strategy input is restricted to payload selectors and Lua desync actions; invalid or incomplete profiles fail validation before installing divert rules.
