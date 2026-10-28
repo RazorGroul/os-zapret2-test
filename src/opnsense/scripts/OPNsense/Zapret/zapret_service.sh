@@ -984,16 +984,17 @@ validate_ipfw_rule_capacity() {
     fi
 
     if [ "${rule_count}" -gt "${rule_capacity}" ]; then
-        echo "configured TCP, QUIC, and additional UDP profiles require ${rule_count} ipfw rules; reserved range ${RULE_BASE}-${RULE_MAX} has room for ${rule_capacity}" >&2
+        echo "configured TCP and aggregated UDP interception require ${rule_count} ipfw rules; reserved range ${RULE_BASE}-${RULE_MAX} has room for ${rule_capacity}" >&2
         return 1
     fi
 
     return 0
 }
 
-# Install ipfw divert rules — one per TCP port, plus one for UDP/443 when a
-# QUIC strategy is configured and one for the optional additional UDP port
-# list. UDP port lists can contain up to 30 comma-separated ports/ranges.
+# Install ipfw divert rules — one per TCP interception port, plus one
+# aggregated UDP rule for built-in QUIC, the additional UDP profile, and all
+# enabled custom UDP profiles. The combined UDP list may contain up to 30
+# comma-separated ports/ranges.
 #
 #   divert 989 tcp from any to any 80,443 out not diverted not sockarg
 #
