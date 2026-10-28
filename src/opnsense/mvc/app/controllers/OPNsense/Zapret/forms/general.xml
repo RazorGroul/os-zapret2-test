@@ -193,6 +193,18 @@
         <label>Host List</label>
     </field>
     <field>
+        <id>zapret.hostlist.uselegacydomains</id>
+        <label>Include Imported General Domain List</label>
+        <type>checkbox</type>
+        <help><![CDATA[Optionally include the imported <code>list-general.txt</code> domains when Host List Mode is set to <b>Only listed domains</b>. Disabled by default to preserve current behavior.]]></help>
+    </field>
+    <field>
+        <id>zapret.hostlist.uselegacyexcludes</id>
+        <label>Include Imported Exclusion Domain List</label>
+        <type>checkbox</type>
+        <help><![CDATA[Optionally exclude domains from the imported <code>list-exclude.txt</code> in every active profile. The custom Exclude Domains field remains available. Disabled by default.]]></help>
+    </field>
+    <field>
         <id>zapret.hostlist.mode</id>
         <label>Host List Mode</label>
         <type>dropdown</type>
