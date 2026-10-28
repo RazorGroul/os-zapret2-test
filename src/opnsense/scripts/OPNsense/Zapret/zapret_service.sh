@@ -660,8 +660,8 @@ cleanup_custom_profile_lists() {
 
 
 prepare_custom_profile_hostlists() {
-    local count i enabled name transport l7 hostname_supported
-    local domains_count excludes_count domains_file excludes_file
+    local rows name transport l7 hostname_supported domains_count excludes_count
+    local domains_file excludes_file
 
     # A missing config means there are no custom profiles to keep; clean
     # only generated plugin-owned files during the preparation/cleanup phase.
@@ -681,36 +681,32 @@ prepare_custom_profile_hostlists() {
     mkdir -p "${CUSTOM_PROFILE_LIST_DIR}" || return 1
     rm -f "${CUSTOM_PROFILE_LIST_DIR}"/custom-profile-*.txt
 
-    count=$("${JQ_BIN}" 'length' "${CUSTOM_PROFILES_FILE}") || return 1
-    if [ "${count}" -eq 0 ]; then
+    rows=$("${JQ_BIN}" -r '
+        sort_by(.order)[] | select(.enabled == true) |
+        [.name, .transport, (.l7|join(",")),
+         ((.domains // [])|length|tostring),
+         ((.exclude_domains // [])|length|tostring)] | join("|")
+    ' "${CUSTOM_PROFILES_FILE}") || return 1
+    if [ -z "${rows}" ]; then
         cleanup_custom_profile_lists
         return 0
     fi
-    i=0
-    while [ "${i}" -lt "${count}" ]; do
-        enabled=$("${JQ_BIN}" -r ".[${i}].enabled" "${CUSTOM_PROFILES_FILE}")
-        if [ "${enabled}" != "true" ]; then
-            i=$((i + 1))
-            continue
-        fi
-        name=$("${JQ_BIN}" -r ".[${i}].name" "${CUSTOM_PROFILES_FILE}")
-        transport=$("${JQ_BIN}" -r ".[${i}].transport" "${CUSTOM_PROFILES_FILE}")
-        l7=$("${JQ_BIN}" -r ".[${i}].l7 | join(\",\")" "${CUSTOM_PROFILES_FILE}")
-        domains_count=$("${JQ_BIN}" -r "(.[${i}].domains // []) | length" "${CUSTOM_PROFILES_FILE}")
-        excludes_count=$("${JQ_BIN}" -r "(.[${i}].exclude_domains // []) | length" "${CUSTOM_PROFILES_FILE}")
+
+    while IFS='|' read -r name transport l7 domains_count excludes_count; do
+        [ -n "${name}" ] || continue
         domains_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-domains.txt"
         excludes_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-exclude.txt"
 
-        # Hostname lists only make sense for TCP flows and pure QUIC UDP.
-        # Do not apply global hostname exclusions to Discord/STUN, WireGuard,
-        # DHT, or unknown UDP traffic that has no hostname.
+        # Hostname lists only make sense for TCP and pure QUIC UDP. Never
+        # apply global hostname exclusions to Discord/STUN, WireGuard, DHT,
+        # or unknown UDP traffic that has no hostname.
         hostname_supported=0
         case "${transport}:${l7}" in
             tcp:*|udp:quic) hostname_supported=1 ;;
         esac
         if [ "${hostname_supported}" -eq 1 ]; then
             if [ "${domains_count}" -gt 0 ]; then
-                "${JQ_BIN}" -r ".[${i}].domains[]?" "${CUSTOM_PROFILES_FILE}" > "${domains_file}" || return 1
+                "${JQ_BIN}" -r --arg name "${name}" '.[] | select(.name == $name) | .domains[]' "${CUSTOM_PROFILES_FILE}" > "${domains_file}" || return 1
                 chmod 600 "${domains_file}" || return 1
             fi
 
@@ -721,7 +717,7 @@ prepare_custom_profile_hostlists() {
                     printf '\n' >> "${excludes_file}"
                 fi
                 if [ "${excludes_count}" -gt 0 ]; then
-                    "${JQ_BIN}" -r ".[${i}].exclude_domains[]?" "${CUSTOM_PROFILES_FILE}" >> "${excludes_file}" || return 1
+                    "${JQ_BIN}" -r --arg name "${name}" '.[] | select(.name == $name) | .exclude_domains[]' "${CUSTOM_PROFILES_FILE}" >> "${excludes_file}" || return 1
                 fi
                 if [ -s "${excludes_file}" ]; then
                     chmod 600 "${excludes_file}" || return 1
@@ -730,8 +726,9 @@ prepare_custom_profile_hostlists() {
                 fi
             fi
         fi
-        i=$((i + 1))
-    done
+    done <<EOF
+${rows}
+EOF
     return 0
 }
 validate_custom_profiles() {
