@@ -25,7 +25,7 @@
         <id>zapret.general.udpports</id>
         <label>Additional UDP Ports</label>
         <type>text</type>
-        <help><![CDATA[Optional UDP ports or port ranges to intercept in addition to QUIC/UDP 443, for example <code>19294-19344,50000-50100</code>. Leave empty to preserve the current UDP behavior. Configure the matching UDP strategy below when this field is used. UDP port 443 cannot overlap this list when the QUIC strategy is enabled.]]></help>
+        <help><![CDATA[Optional UDP ports or port ranges to intercept in addition to QUIC/UDP 443, for example <code>19294-19344,50000-50100</code>. Leave empty to preserve the current UDP behavior. Configure the matching UDP strategy below when this field is used. UDP port 443 cannot overlap this list while any QUIC profile is enabled.]]></help>
     </field>
     <field>
         <id>zapret.general.sourcenets</id>
