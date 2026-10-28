@@ -120,4 +120,21 @@ while [ "$i" -le 31 ]; do
 done
 expect_udp_invalid "$long_list" "discord" "--lua-desync=fake" ""
 
+# Ensure the service constructs the additional dvtws2 profile with UDP ports,
+# L7 filter, shared host lists, and the validated strategy arguments.
+grep -qF 'args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${hostlist_noauto_args} ${UDP_ARGS}"' "${service}"
+
+# Invalid additional UDP settings must be rejected before any ipfw rule is added.
+: > "${ipfw_log}"
+PORTS="80,443"
+QUIC_ARGS=""
+UDP_PORTS="19294-19344"
+UDP_FILTER_L7="discord,stun"
+UDP_ARGS="--lua-desync=fake;touch"
+if install_ipfw_rules igc0 2>/dev/null; then
+    echo 'unsafe UDP strategy was accepted for rule installation' >&2
+    exit 1
+fi
+test ! -s "${ipfw_log}"
+
 echo 'zapret ipfw and UDP profile tests: ok'
