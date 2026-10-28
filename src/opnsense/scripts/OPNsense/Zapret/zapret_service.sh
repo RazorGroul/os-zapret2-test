@@ -689,7 +689,7 @@ prepare_custom_profile_hostlists() {
         [.name, .transport, (.l7|join(",")),
          ((.domains // [])|length|tostring),
          ((.exclude_domains // [])|length|tostring)] | join("|")
-    ' "${CUSTOM_PROFILES_FILE}") || return 1
+    ' "${CUSTOM_PROFILES_FILE}" | tr -d '\r') || return 1
     if [ -z "${rows}" ]; then
         cleanup_custom_profile_lists
         return 0
@@ -709,7 +709,7 @@ prepare_custom_profile_hostlists() {
         esac
         if [ "${hostname_supported}" -eq 1 ]; then
             if [ "${domains_count}" -gt 0 ]; then
-                "${JQ_BIN}" -r --arg name "${name}" '.[] | select(.name == $name) | .domains[]' "${CUSTOM_PROFILES_FILE}" > "${domains_file}" || return 1
+                "${JQ_BIN}" -r --arg name "${name}" '.[] | select(.name == $name) | .domains[]' "${CUSTOM_PROFILES_FILE}" | tr -d '\r' > "${domains_file}" || return 1
                 chmod 600 "${domains_file}" || return 1
             fi
 
@@ -720,7 +720,7 @@ prepare_custom_profile_hostlists() {
                     printf '\n' >> "${excludes_file}"
                 fi
                 if [ "${excludes_count}" -gt 0 ]; then
-                    "${JQ_BIN}" -r --arg name "${name}" '.[] | select(.name == $name) | .exclude_domains[]' "${CUSTOM_PROFILES_FILE}" >> "${excludes_file}" || return 1
+                    "${JQ_BIN}" -r --arg name "${name}" '.[] | select(.name == $name) | .exclude_domains[]' "${CUSTOM_PROFILES_FILE}" | tr -d '\r' >> "${excludes_file}" || return 1
                 fi
                 if [ -s "${excludes_file}" ]; then
                     chmod 600 "${excludes_file}" || return 1
@@ -809,7 +809,7 @@ validate_custom_profiles() {
          (.l7|join(",")), .strategy, (.ipset // "inherit"),
          ((.domains // [])|length|tostring),
          ((.exclude_domains // [])|length|tostring)] | join("|")
-    ' "${CUSTOM_PROFILES_FILE}") || return 1
+    ' "${CUSTOM_PROFILES_FILE}" | tr -d '\r') || return 1
 
     while IFS='|' read -r enabled name order transport ports l7 strategy ipset domains_count excludes_count; do
         [ -n "${name}" ] || continue
@@ -887,7 +887,7 @@ build_custom_profile_args() {
     rows=$("${JQ_BIN}" -r '
         sort_by(.order)[] | select(.enabled == true) |
         [.name, .transport, .ports, (.l7|join(",")), .strategy, (.ipset // "inherit")] | join("|")
-    ' "${CUSTOM_PROFILES_FILE}") || return 1
+    ' "${CUSTOM_PROFILES_FILE}" | tr -d '\r') || return 1
     [ -n "${rows}" ] || return 0
 
     while IFS='|' read -r name transport ports l7 strategy ipset; do
