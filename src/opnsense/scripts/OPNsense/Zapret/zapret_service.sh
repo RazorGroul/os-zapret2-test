@@ -613,18 +613,16 @@ start_service() {
         exit 1
     fi
 
-    # Build dvtws2 args
+    # Build dvtws2 args. The managed service profiles are intentionally
+    # ordered ahead of the generic TCP/QUIC profiles because zapret2 evaluates
+    # the first matching profile.
     local args="--port=${DIVERT_PORT}"
     [ -f "${LUA_LIB}" ]      && args="${args} --lua-init=@${LUA_LIB}"
     [ -f "${LUA_ANTIDPI}" ]  && args="${args} --lua-init=@${LUA_ANTIDPI}"
 
-    # TCP profile: HTTP/HTTPS only.
-    args="${args} --filter-tcp=${PORTS}${IPSET_ARGS}"
-    [ -n "${HTTP_ARGS}" ]    && args="${args} ${HTTP_ARGS}"
-    [ -n "${HTTPS_ARGS}" ]   && args="${args} ${HTTPS_ARGS}"
-
     local hostlist_args=""
     local hostlist_noauto_args=""
+    local hostlist_exclude_args=""
 
     if [ "${HOSTLIST_MODE}" = "list" ] && [ -f "${HOSTLIST}" ] && [ -s "${HOSTLIST}" ]; then
         hostlist_args="${hostlist_args} --hostlist=${HOSTLIST}"
@@ -636,21 +634,51 @@ start_service() {
     fi
 
     if [ -f "${HOSTLIST_EXCLUDE}" ] && [ -s "${HOSTLIST_EXCLUDE}" ]; then
-        hostlist_args="${hostlist_args} --hostlist-exclude=${HOSTLIST_EXCLUDE}"
-        hostlist_noauto_args="${hostlist_noauto_args} --hostlist-exclude=${HOSTLIST_EXCLUDE}"
+        hostlist_exclude_args=" --hostlist-exclude=${HOSTLIST_EXCLUDE}"
+        hostlist_args="${hostlist_args}${hostlist_exclude_args}"
+        hostlist_noauto_args="${hostlist_noauto_args}${hostlist_exclude_args}"
     fi
 
-    # Apply host filtering to the TCP profile.
+    local profile_started=0
+
+    # YouTube / Google TLS profile (TCP/443).
+    if [ "${YOUTUBE_TCP_ENABLED:-0}" = "1" ]; then
+        args="${args} --filter-tcp=443 --filter-l7=tls --hostlist=${YOUTUBE_HOSTLIST}${hostlist_exclude_args}${IPSET_ARGS} ${YOUTUBE_TCP_ARGS}"
+        profile_started=1
+    fi
+
+    # Discord's desktop/web TLS endpoints also use several non-standard ports.
+    if [ "${DISCORD_TCP_ENABLED:-0}" = "1" ]; then
+        if [ "${profile_started}" = "1" ]; then
+            args="${args} --new"
+        fi
+        args="${args} --filter-tcp=443,2053,2083,2087,2096,8443 --filter-l7=tls --hostlist=${DISCORD_HOSTLIST}${hostlist_exclude_args}${IPSET_ARGS} ${DISCORD_TCP_ARGS}"
+        profile_started=1
+    fi
+
+    # Keep the existing generic TCP strategy as the fallback. If a named
+    # profile was emitted first, start the fallback with --new.
+    if [ "${profile_started}" = "1" ]; then
+        args="${args} --new"
+    fi
+    args="${args} --filter-tcp=${PORTS}${IPSET_ARGS}"
+    [ -n "${HTTP_ARGS}" ]    && args="${args} ${HTTP_ARGS}"
+    [ -n "${HTTPS_ARGS}" ]   && args="${args} ${HTTPS_ARGS}"
     args="${args}${hostlist_args}"
 
-    # QUIC is a separate UDP profile. Auto-hostlist entries are used as a
-    # regular hostlist here, matching upstream <HOSTLIST_NOAUTO> semantics.
+    # Specific YouTube / Google QUIC profile must precede the generic QUIC
+    # strategy so that its per-domain strategy is selected first.
+    if [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; then
+        args="${args} --new --filter-udp=443 --filter-l7=quic --hostlist=${YOUTUBE_HOSTLIST}${hostlist_exclude_args}${IPSET_ARGS} ${YOUTUBE_QUIC_ARGS}"
+    fi
+
+    # Generic QUIC is optional and keeps its historical behavior when set.
     if [ -n "${QUIC_ARGS}" ]; then
         args="${args} --new --filter-udp=443 --filter-l7=quic${hostlist_noauto_args}${IPSET_ARGS} ${QUIC_ARGS}"
     fi
 
-    # Optional additional UDP profile (e.g. Discord voice). It inherits the
-    # same include/exclude host-list behavior as the QUIC profile.
+    # Additional UDP profile, for example Discord voice, is independent of
+    # UDP/443 unless explicitly configured to overlap it (which is rejected).
     if [ -n "${UDP_PORTS}" ]; then
         args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${hostlist_noauto_args}${IPSET_ARGS} ${UDP_ARGS}"
     fi
