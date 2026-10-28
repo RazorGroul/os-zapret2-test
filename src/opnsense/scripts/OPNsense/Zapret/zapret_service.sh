@@ -636,8 +636,10 @@ cleanup_custom_profile_lists() {
     fi
 }
 
+
 prepare_custom_profile_hostlists() {
-    local count i enabled name domains_count excludes_count domains_file excludes_file
+    local count i enabled name transport l7 hostname_supported
+    local domains_count excludes_count domains_file excludes_file
 
     if [ -L "${CUSTOM_PROFILE_LIST_DIR}" ]; then
         echo "custom profile hostlist directory must not be a symlink" >&2
@@ -664,37 +666,46 @@ prepare_custom_profile_hostlists() {
             continue
         fi
         name=$("${JQ_BIN}" -r ".[${i}].name" "${CUSTOM_PROFILES_FILE}")
-        domains_count=$("${JQ_BIN}" -r "(.[${i}].domains // []) | length" "${CUSTOM_PROFILES_FILE}" 2>/dev/null)
-        excludes_count=$("${JQ_BIN}" -r "(.[${i}].exclude_domains // []) | length" "${CUSTOM_PROFILES_FILE}" 2>/dev/null)
+        transport=$("${JQ_BIN}" -r ".[${i}].transport" "${CUSTOM_PROFILES_FILE}")
+        l7=$("${JQ_BIN}" -r ".[${i}].l7 | join(\",\")" "${CUSTOM_PROFILES_FILE}")
+        domains_count=$("${JQ_BIN}" -r "(.[${i}].domains // []) | length" "${CUSTOM_PROFILES_FILE}")
+        excludes_count=$("${JQ_BIN}" -r "(.[${i}].exclude_domains // []) | length" "${CUSTOM_PROFILES_FILE}")
         domains_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-domains.txt"
         excludes_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-exclude.txt"
 
-        if [ "${domains_count}" -gt 0 ]; then
-            "${JQ_BIN}" -r ".[${i}].domains[]?" "${CUSTOM_PROFILES_FILE}" > "${domains_file}" || return 1
-            chmod 600 "${domains_file}" || return 1
-        fi
+        # Hostname lists only make sense for TCP flows and pure QUIC UDP.
+        # Do not apply global hostname exclusions to Discord/STUN, WireGuard,
+        # DHT, or unknown UDP traffic that has no hostname.
+        hostname_supported=0
+        case "${transport}:${l7}" in
+            tcp:*|udp:quic) hostname_supported=1 ;;
+        esac
+        if [ "${hostname_supported}" -eq 1 ]; then
+            if [ "${domains_count}" -gt 0 ]; then
+                "${JQ_BIN}" -r ".[${i}].domains[]?" "${CUSTOM_PROFILES_FILE}" > "${domains_file}" || return 1
+                chmod 600 "${domains_file}" || return 1
+            fi
 
-        if { [ "${excludes_count}" -gt 0 ] || { [ -s "${HOSTLIST_EXCLUDE}" ] && [ -r "${HOSTLIST_EXCLUDE}" ]; }; }; then
-            : > "${excludes_file}" || return 1
-            if [ -s "${HOSTLIST_EXCLUDE}" ] && [ -r "${HOSTLIST_EXCLUDE}" ]; then
-                cat "${HOSTLIST_EXCLUDE}" >> "${excludes_file}" || return 1
-                printf '\n' >> "${excludes_file}"
-            fi
-            if [ "${excludes_count}" -gt 0 ]; then
-                "${JQ_BIN}" -r ".[${i}].exclude_domains[]?" "${CUSTOM_PROFILES_FILE}" >> "${excludes_file}" || return 1
-            fi
-            if [ -s "${excludes_file}" ]; then
-                chmod 600 "${excludes_file}" || return 1
-            else
-                rm -f "${excludes_file}"
+            if { [ "${excludes_count}" -gt 0 ] || { [ -s "${HOSTLIST_EXCLUDE}" ] && [ -r "${HOSTLIST_EXCLUDE}" ]; }; }; then
+                : > "${excludes_file}" || return 1
+                if [ -s "${HOSTLIST_EXCLUDE}" ] && [ -r "${HOSTLIST_EXCLUDE}" ]; then
+                    cat "${HOSTLIST_EXCLUDE}" >> "${excludes_file}" || return 1
+                    printf '\n' >> "${excludes_file}"
+                fi
+                if [ "${excludes_count}" -gt 0 ]; then
+                    "${JQ_BIN}" -r ".[${i}].exclude_domains[]?" "${CUSTOM_PROFILES_FILE}" >> "${excludes_file}" || return 1
+                fi
+                if [ -s "${excludes_file}" ]; then
+                    chmod 600 "${excludes_file}" || return 1
+                else
+                    rm -f "${excludes_file}"
+                fi
             fi
         fi
         i=$((i + 1))
     done
     return 0
 }
-
-
 validate_custom_profiles() {
     local count i enabled name order transport ports l7 strategy ipset
     local domains_count excludes_count j entry token saved_ifs
