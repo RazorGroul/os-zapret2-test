@@ -92,12 +92,14 @@ test "${CUSTOM_UDP_PORTS}" = "19294-19344,50000-50100,443"
 
 prepare_custom_profile_hostlists
 voice_domains="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-discord-voice-domains.txt"
+voice_excludes="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-discord-voice-exclude.txt"
 tls_domains="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-custom-tls-domains.txt"
 tls_excludes="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-custom-tls-exclude.txt"
 quic_domains="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-custom-quic-domains.txt"
 quic_excludes="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-custom-quic-exclude.txt"
 
 test ! -e "${voice_domains}"
+test ! -e "${voice_excludes}"
 test -s "${tls_domains}"
 grep -qF 'example.com' "${tls_domains}"
 grep -qF '^exact.example' "${tls_domains}"
