@@ -42,8 +42,8 @@ LUA_ANTIDPI="${ZAPRET_DIR}/lua/zapret-antidpi.lua"
 
 # ipfw rule numbers we own. Range 19000-19010 — high enough to avoid
 # OPNsense's own rules, low enough to fire before the default-accept at
-# 65534. TCP ports start at 19000; when QUIC is enabled, the next rule
-# diverts UDP/443 (19002 with the default TCP ports 80,443).
+# 65534. One rule number is used per TCP port, followed by at most one
+# UDP/443 rule and one additional UDP port-list rule.
 RULE_BASE=19000
 RULE_MAX=$((RULE_BASE + 10))
 
