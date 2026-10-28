@@ -49,6 +49,7 @@ jobs:
           sh tests/ipset_validation_test.sh
           sh tests/custom_profiles_test.sh
           sh tests/config_safety_test.sh
+          sh tests/ipfw_state_test.sh
 
       - name: Check file structure
         run: |

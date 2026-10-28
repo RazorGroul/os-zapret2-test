@@ -15,7 +15,7 @@ This plugin packages [bol-van/zapret2](https://github.com/bol-van/zapret2) into 
 - Auto-start on every reboot once Enable is checked.
 - `daemon -r` supervision so a dvtws2 crash auto-restarts within ~1 second.
 - A safety watchdog that auto-stops the service if a misconfigured strategy starts breaking general HTTPS — your household internet recovers in ~3 minutes without anyone touching anything.
-- **`ipfw divert` + `--sockarg` loop-guard** — matches upstream zapret's pfSense init script. An `ipfw divert` rule with `not diverted not sockarg xmit <wan>` intercepts outbound TCP on the configured ports; dvtws2 is launched with `--sockarg=0x200` so its reinjected packets sail past the rule. Combined with the upstream recipe's `pfctl -d; pfctl -e` pfil-hook reorder, this works on both bare-metal PPPoE and virtualized OPNsense (Proxmox/virtio), for both firewall-local traffic and NAT'd LAN clients. (Earlier `pf divert-to`–based 1.6.x releases broke LAN-NAT'd traffic; v1.6.5_3 reverted to the upstream ipfw recipe.)
+- **`ipfw divert` + `--sockarg` loop-guard** — matches upstream zapret's pfSense init script. An `ipfw divert` rule with `not diverted not sockarg xmit <wan>` intercepts outbound TCP on the configured ports; dvtws2 is launched with `--sockarg=0x200` so its reinjected packets sail past the rule. The service uses FreeBSD `pfilctl` to order the IPFW output hook without disabling PF. It captures the pre-start IPFW sysctls and hook positions, uses temporary marked pass-through rules only when a previously disabled IPFW ruleset needs them, and removes those owned rules/restores the captured state on stop or startup failure. If a disabled IPFW ruleset already contains unrelated rules, startup fails closed rather than enabling or rewriting it. Runtime behavior still needs testing on a separate OPNsense instance. (Earlier `pf divert-to`–based 1.6.x releases broke LAN-NAT'd traffic; v1.6.5_3 reverted to the upstream ipfw recipe.)
 
 ## Requirements
 
@@ -155,7 +155,7 @@ LAN client ──► OPNsense (ipfw divert) ──► dvtws2 (manipulates TLS Cl
 
 1. The plugin installs one `ipfw divert` rule per configured TCP port/range entry, plus a single UDP rule when UDP/443 or any additional/custom UDP ports are enabled. Rules are scoped to the selected WAN device and optionally to **Source Networks**; traffic already marked as diverted or reinjected is excluded.
 2. `dvtws2` receives the packets on the configured divert socket, chooses the first matching profile in generated argument order, applies the selected Lua desynchronization strategy, and reinjects packets. The service uses `--sockarg=0x200` and the `not diverted not sockarg` guard to prevent processing its own reinjected packets repeatedly.
-3. On start, the plugin adjusts the FreeBSD packet-filter hook order using `pfctl -d; pfctl -e` so the divert/reinjection path is processed as intended. This is an existing, system-level behavior and should be tested on a non-critical firewall.
+3. On start, the plugin uses `pfilctl` to place the IPFW output hook before PF in output packet-processing order, then verifies the resulting hook positions. PF remains enabled throughout; no `pfctl -d/-e` bounce is used by the normal service. The previous IPFW sysctls and hook positions are recorded and restored on stop or startup failure.
 4. Custom profiles are emitted in ascending `order`, before the managed YouTube/Google and Discord profiles and the general fallback strategies. UDP profiles share the same kernel divert rule, but `dvtws2` applies each profile's own port and L7 filter.
 5. Packets that do not match an enabled profile, or are not included by its hostname/IPSet filters, follow the remaining strategy/profile behavior or pass through without that profile's desynchronization.
 
@@ -167,8 +167,27 @@ The service reserves rule numbers 19000–19010 and checks capacity before start
 - **Watchdog auto-stop.** Every minute, a watchdog probes `https://example.com` through the bypass. If 3 consecutive checks fail (= a misconfigured strategy is breaking general HTTPS, or dvtws2 genuinely won't stay up), the watchdog calls `configctl zapret stop` itself. That removes the `ipfw` divert rules and traffic flows through unbypassed again; full recovery in ~3 minutes without anyone touching anything. Check `tail /var/log/messages | grep zapret-watchdog` for the reason. Override the probe URL via `/usr/local/etc/zapret2/watchdog.conf` (`CONTROL_URL=https://...`).
 - **No DNS changes required.** The plugin operates at the packet level; your DNS configuration is independent. (For ISP DNS poisoning, pair this with AdGuard/Unbound DoH, which OPNsense supports natively.)
 - **WAN-only.** The `ipfw` rules are scoped with `xmit <wan_dev>`; LAN-to-LAN traffic and other interfaces are untouched.
+- **Reversible IPFW integration.** PF is not disabled during the normal service start/restart. IPFW changes are tracked in `/var/run/zapret-ipfw-state`; temporary catch-all pass rules, if required for a previously disabled IPFW instance, have ownership markers and are removed on stop/failure. If restoration fails, the state file is kept for recovery and the service reports an error. Do not ignore that warning or reboot a production firewall to work around it.
 - **Shell configuration safety.** The plugin validates its generated shell configuration before the service, watchdog, or diagnostic scripts source it. It rejects shell expansion characters (`$`, backticks, and backslashes), pathname glob characters (`*`, `?`, `[` and `]`), embedded quotes, multiline values, unknown variables, duplicate assignments, and config files larger than 64 KiB. Do not enter shell syntax into legacy strategy or Extra Arguments fields. Custom profiles are parsed as JSON and never sourced as shell.
 
+
+## Rollback and legacy-upgrade notes
+
+Perform installation and rollback on a separate test firewall first. On the new version, stop the service before removing the package so it can remove the divert rules and restore the captured IPFW state:
+
+```sh
+configctl zapret stop
+ipfw list | awk '$1 >= 19000 && $1 <= 19010'
+ipfw list 65530
+ipfw list 65531
+pkg delete os-zapret2
+```
+
+After stopping, the plugin-owned divert rules should be gone. If `/var/run/zapret-ipfw-state` remains or the service reported that restoration was incomplete, do not install an older package yet. Inspect `pfilctl heads`, `sysctl net.inet.ip.fw.enable net.inet.ip.fw.one_pass net.inet6.ip6.fw.enable`, and `ipfw list`; restore the previous state deliberately on the test firewall. Keep a copy of the package and exported OPNsense configuration until rollback is verified.
+
+Older revisions of this fork may have added rule `65534 allow ip from any to any` without an ownership marker and may have disabled/re-enabled PF to reorder hooks. New code does not delete rule 65534 automatically because an identical rule could belong to the administrator or another service. Before updating an older install, inspect `ipfw list 65534`; remove it only if you have confirmed it was left by the old plugin. Do not copy a blanket `ipfw delete 65534` command into automation.
+
+For full plugin rollback, install the previously saved package built for the same FreeBSD major and run its setup only after verifying the firewall rules and hook order are restored. OPNsense settings in `config.xml` are retained by package removal. Never use a production firewall as the first upgrade/rollback target.
 
 ## Troubleshooting
 

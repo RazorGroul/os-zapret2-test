@@ -38,6 +38,22 @@ YOUTUBE_HOSTLIST="${ZAPRET_DIR}/hostlist-youtube.txt"
 DISCORD_HOSTLIST="${ZAPRET_DIR}/hostlist-discord.txt"
 AUTOHOSTLIST="${ZAPRET_DIR}/autohostlist.txt"
 IPSET_VALIDATOR="/usr/local/opnsense/scripts/OPNsense/Zapret/validate_ipset.awk"
+IPFW_STATE_FILE="/var/run/zapret-ipfw-state"
+IPFW_PASS4_MARKER="/var/run/zapret-ipfw-pass4-owned"
+IPFW_PASS6_MARKER="/var/run/zapret-ipfw-pass6-owned"
+IPFW_PASS4_RULE=65530
+IPFW_PASS6_RULE=65531
+IPFW_BIN="/sbin/ipfw"
+SYSCTL_BIN="/sbin/sysctl"
+PFILCTL_BIN="/sbin/pfilctl"
+IPFW_STATE_HELPER="/usr/local/opnsense/scripts/OPNsense/Zapret/ipfw_state.sh"
+if [ -r "$IPFW_STATE_HELPER" ]; then
+    . "$IPFW_STATE_HELPER"
+else
+    echo "required IPFW state helper is missing: $IPFW_STATE_HELPER" >&2
+    exit 1
+fi
+STARTUP_IN_PROGRESS=0
 CUSTOM_PROFILES_FILE="${ZAPRET_DIR}/custom-profiles.json"
 CUSTOM_PROFILE_LIST_DIR="${ZAPRET_DIR}/custom-hostlists"
 JQ_BIN="/usr/local/bin/jq"
@@ -45,10 +61,11 @@ JQ_BIN="/usr/local/bin/jq"
 LUA_LIB="${ZAPRET_DIR}/lua/zapret-lib.lua"
 LUA_ANTIDPI="${ZAPRET_DIR}/lua/zapret-antidpi.lua"
 
-# ipfw rule numbers we own. Range 19000-19010 — high enough to avoid
-# OPNsense's own rules, low enough to fire before the default-accept at
-# 65534. One rule number is used per TCP port; all enabled UDP profiles
-# share one aggregated UDP port-list rule.
+# ipfw rule numbers owned by this plugin. Range 19000-19010 is reserved
+# for divert rules; it is evaluated before FreeBSD's implicit rule 65535.
+# One rule number is used per configured TCP port; enabled UDP profiles
+# share one aggregated UDP port-list rule. Temporary pass-through rules,
+# if needed, use 65530/65531 and are tracked in ipfw_state.sh.
 RULE_BASE=19000
 RULE_MAX=$((RULE_BASE + 10))
 
@@ -105,53 +122,11 @@ remove_ipfw_rules() {
 }
 
 ensure_ipfw_default_accept() {
-    # ipfw's default ruleset ends at 65535 with "deny ip from any to any"
-    # UNLESS the kernel was built with IPFIREWALL_DEFAULT_TO_ACCEPT or
-    # the sysctl is 1. On OPNsense neither is guaranteed, so we add an
-    # explicit accept-all at 65534 (just inside the default-deny) the
-    # first time we enable ipfw. Without this, loading the ipfw module
-    # instantly drops every packet the box is handling.
-    local default_accept=$(/sbin/sysctl -n net.inet.ip.fw.default_to_accept 2>/dev/null)
-    if [ "${default_accept}" != "1" ]; then
-        /sbin/ipfw -q add 65534 allow ip from any to any 2>/dev/null || true
-    fi
+    ipfw_state_ensure_passthrough
 }
 
 configure_ipfw_reinject() {
-    # Make ipfw's divert fire BEFORE pf on the outbound IPv4 path, so pf
-    # builds correct state for dvtws2's reinjected/desynced packets instead
-    # of dropping their return traffic. THE ORDER OF THESE STEPS MATTERS —
-    # it was verified live on OPNsense 26.1 / FreeBSD 14 (bare-metal PPPoE):
-    #
-    #   - With pf ahead of ipfw, the blocked site's reinjected ClientHello
-    #     goes out but the server's SYN-ACK is dropped by pf (no matching
-    #     state) and the connection hangs — even general HTTPS breaks.
-    #   - With ipfw ahead of pf, divert fires AND traffic completes: blocked
-    #     domain bypasses, untouched domains keep working.
-    #
-    # The legacy `net.inet.ip.pfil.outbound=ipfw,pf` knob USED to set this
-    # order but DOES NOT EXIST on FreeBSD 14 (the OID is gone), so it can't
-    # be relied on. The working mechanism is pfil hook (re)registration order:
-    #
-    # 1) Enable ipfw FIRST. Enabling links ipfw's hook into the `inet` pfil
-    #    head — but it appends AFTER pf (pf registered at boot). `kldload`
-    #    alone is not enough: on OPNsense ipfw is usually already resident
-    #    (e.g. blockcheck loads it then restores enable=0 on exit), so the
-    #    `kldstat || kldload` guard short-circuits and enable stays 0 — then
-    #    the divert rules are installed but ipfw evaluates NOTHING. Set it
-    #    explicitly, and set it here so the hook is linked before step 2.
-    /sbin/sysctl net.inet.ip.fw.one_pass=1 >/dev/null 2>&1
-    /sbin/sysctl net.inet.ip.fw.enable=1   >/dev/null 2>&1
-
-    # 2) THEN bounce pf. Disabling unlinks pf's hooks; re-enabling appends
-    #    them to the BACK of the chain — i.e. AFTER ipfw, which is now
-    #    already linked. Result on the outbound `inet` head:
-    #        ipfw:default   (runs first → divert)
-    #        pf:default-out (runs second → NAT/state on the final packets)
-    #    Doing this bounce BEFORE enabling ipfw (as a previous revision did)
-    #    leaves ipfw behind pf and silently breaks the bypass.
-    /sbin/pfctl -d >/dev/null 2>&1
-    /sbin/pfctl -e >/dev/null 2>&1
+    ipfw_state_configure
 }
 
 validate_ipset_filename() {
@@ -1033,8 +1008,8 @@ validate_ipfw_rule_capacity() {
 #   divert socket for IPv6 and falls back to `diverted`-only.)
 #
 # Either of these flags alone was insufficient in our virtio tests
-# (million-packet loops). Combined with the `pfctl -d ; pfctl -e`
-# bounce in configure_ipfw_reinject above, traffic flows correctly.
+# (million-packet loops). configure_ipfw_reinject uses pfilctl to order the
+# output hook while keeping PF enabled; see ipfw_state.sh for rollback.
 #
 # `xmit $wan_dev` scopes to outbound on the WAN device so we only
 # intercept traffic actually leaving the firewall.
@@ -1147,6 +1122,8 @@ start_service() {
         exit 0
     fi
 
+    ipfw_state_recover_stale || exit 1
+
     # Remove stale plugin-owned divert rules before any fallible startup step.
     # If dvtws2, hostlist generation, interface resolution or kernel setup fails,
     # traffic must fail open rather than be diverted into a dead socket.
@@ -1166,10 +1143,19 @@ start_service() {
 
     # Load required kernel modules. ipdivert is the divert socket
     # backend; ipfw is the firewall that owns our divert rules.
+    IPFW_MODULE_WAS_LOADED=1
+    kldstat -q -m ipfw || IPFW_MODULE_WAS_LOADED=0
+
+    # Arm rollback before loading a module: even an early startup error must
+    # restore IPFW to the state observed before the plugin touched it.
+    STARTUP_IN_PROGRESS=1
     kldstat -q -m ipdivert || kldload ipdivert
     kldstat -q -m ipfw     || kldload ipfw
-    ensure_ipfw_default_accept
-    configure_ipfw_reinject
+
+    # Capture pre-start sysctls/hooks before changing any network state.
+    ipfw_state_capture || exit 1
+    ensure_ipfw_default_accept || exit 1
+    configure_ipfw_reinject || exit 1
 
     local wan_dev=$(resolve_interface "${WAN_IF}")
     if [ -z "${wan_dev}" ]; then
@@ -1315,6 +1301,7 @@ start_service() {
             "${WATCHDOG_LOOP}"
     fi
 
+    STARTUP_IN_PROGRESS=0
     echo "zapret is running as pid $(cat ${PIDFILE}) (supervisor pid $(cat ${SUPERVISOR_PIDFILE}))"
 }
 
@@ -1353,6 +1340,9 @@ stop_service() {
     fi
     killall dvtws2 2>/dev/null
     cleanup_custom_profile_lists
+
+    STARTUP_IN_PROGRESS=0
+    ipfw_state_restore || return 1
 
     echo "zapret is not running (stopped)"
 }
@@ -1421,6 +1411,26 @@ reconfigure_service() {
     fi
 }
 
+startup_failure_cleanup() {
+    _status=$?
+    [ "$STARTUP_IN_PROGRESS" = "1" ] || return "$_status"
+    STARTUP_IN_PROGRESS=0
+    remove_ipfw_rules
+    for _pidfile in "$WATCHDOG_SUPERVISOR_PIDFILE" "$WATCHDOG_PIDFILE" "$SUPERVISOR_PIDFILE" "$PIDFILE"; do
+        if [ -f "$_pidfile" ]; then
+            _pid=$(cat "$_pidfile" 2>/dev/null || true)
+            case "$_pid" in ""|*[!0-9]*) ;; *) kill "$_pid" 2>/dev/null || true ;; esac
+            rm -f "$_pidfile"
+        fi
+    done
+    cleanup_custom_profile_lists
+    if ! ipfw_state_restore; then
+        echo "startup rollback incomplete; inspect $IPFW_STATE_FILE before retrying" >&2
+    fi
+    return "$_status"
+}
+
+trap startup_failure_cleanup EXIT
 case "$1" in
     start)       start_service ;;
     stop)        stop_service ;;
