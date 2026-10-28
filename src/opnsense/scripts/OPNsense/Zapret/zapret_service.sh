@@ -414,6 +414,47 @@ validate_udp_configuration() {
     return 0
 }
 
+validate_tcp_ports() {
+    local raw="${PORTS:-}"
+    local item normalized=""
+    local saved_ifs="${IFS}"
+
+    case "${raw}" in
+        ""|,*|*,|*,,*|*[!0-9,]*)
+            echo "TCP Ports must be a comma-separated list of port numbers from 1 to 65535" >&2
+            return 1
+            ;;
+    esac
+
+    IFS=","
+    for item in ${raw}; do
+        case "${item}" in
+            ""|*[!0-9]*)
+                IFS="${saved_ifs}"
+                echo "invalid TCP port: ${item}" >&2
+                return 1
+                ;;
+        esac
+
+        item=$(printf '%s' "${item}" | sed 's/^0*//')
+        [ -n "${item}" ] || item=0
+        if [ "${item}" -lt 1 ] || [ "${item}" -gt 65535 ]; then
+            IFS="${saved_ifs}"
+            echo "TCP port must be within 1-65535: ${item}" >&2
+            return 1
+        fi
+
+        case ",${normalized}," in
+            *,"${item}",*) ;;
+            *) normalized="${normalized:+${normalized},}${item}" ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+
+    PORTS="${normalized}"
+    return 0
+}
+
 build_tcp_intercept_ports() {
     local combined="${PORTS:-}"
     local port
@@ -446,6 +487,7 @@ validate_ipfw_rule_capacity() {
     local rule_count=0
     local IFS_SAVED="${IFS}"
 
+    validate_tcp_ports || return 1
     validate_ipset_configuration || return 1
     validate_managed_profiles || return 1
     validate_udp_configuration || return 1
