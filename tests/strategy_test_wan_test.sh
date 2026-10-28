@@ -57,6 +57,7 @@ chmod +x "${bin_dir}/drill" "${bin_dir}/curl" \
 PATH="${bin_dir}:${PATH}" \
 IPFW_LOG="${ipfw_log}" \
 ZAPRET_DIR="${test_root}/zapret" \
+ZAPRET_CONFIG_VALIDATOR="${repo_root}/src/opnsense/scripts/OPNsense/Zapret/validate_config.sh" \
 DRILL="${bin_dir}/drill" \
 CURL="${bin_dir}/curl" \
 IPFW="${bin_dir}/ipfw" \
