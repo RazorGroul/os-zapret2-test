@@ -62,6 +62,45 @@
                 <Required>N</Required>
             </extraargs>
         </strategy>
+        <youtube>
+            <tcpenabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </tcpenabled>
+            <tcpstrategy type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
+                <ValidationMessage>Use only zapret2 --payload and --lua-desync arguments.</ValidationMessage>
+            </tcpstrategy>
+            <quicenabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </quicenabled>
+            <quicstrategy type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
+                <ValidationMessage>Use only zapret2 --payload and --lua-desync arguments.</ValidationMessage>
+            </quicstrategy>
+            <domains type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9\.\-\^\n\r\s]*$/</Mask>
+            </domains>
+        </youtube>
+        <discord>
+            <tcpenabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </tcpenabled>
+            <tcpstrategy type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
+                <ValidationMessage>Use only zapret2 --payload and --lua-desync arguments.</ValidationMessage>
+            </tcpstrategy>
+            <domains type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9\.\-\^\n\r\s]*$/</Mask>
+            </domains>
+        </discord>
         <ipset>
             <includeenabled type="BooleanField">
                 <Default>0</Default>
