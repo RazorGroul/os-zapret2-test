@@ -33,6 +33,8 @@ WATCHDOG_LOOP="/usr/local/opnsense/scripts/OPNsense/Zapret/watchdog_loop.sh"
 DVTWS_BIN="${ZAPRET_DIR}/binaries/my/dvtws2"
 HOSTLIST="${ZAPRET_DIR}/hostlist.txt"
 HOSTLIST_EXCLUDE="${ZAPRET_DIR}/hostlist-exclude.txt"
+YOUTUBE_HOSTLIST="${ZAPRET_DIR}/hostlist-youtube.txt"
+DISCORD_HOSTLIST="${ZAPRET_DIR}/hostlist-discord.txt"
 AUTOHOSTLIST="${ZAPRET_DIR}/autohostlist.txt"
 IPSET_VALIDATOR="/usr/local/opnsense/scripts/OPNsense/Zapret/validate_ipset.awk"
 LUA_LIB="${ZAPRET_DIR}/lua/zapret-lib.lua"
@@ -203,6 +205,91 @@ validate_ipset_configuration() {
     return 0
 }
 
+validate_strategy_arguments() {
+    local profile="$1"
+    local value="$2"
+    local saved_ifs="${IFS}"
+    local token
+
+    if [ -z "${value}" ]; then
+        echo "${profile} strategy is empty" >&2
+        return 1
+    fi
+
+    # The value is later split into argv by /bin/sh. Restrict characters to
+    # the small grammar used by --payload and --lua-desync, excluding paths,
+    # shell operators, quotes, substitutions, globs, and redirections.
+    case "${value}" in
+        *[!a-zA-Z0-9_,.:=+ \-]*)
+            echo "${profile} strategy contains unsupported characters" >&2
+            return 1
+            ;;
+    esac
+
+    IFS=' 	
+'
+    for token in ${value}; do
+        case "${token}" in
+            --payload=*)
+                [ -n "${token#--payload=}" ] || { IFS="${saved_ifs}"; echo "empty --payload value in ${profile} strategy" >&2; return 1; }
+                ;;
+            --lua-desync=*)
+                [ -n "${token#--lua-desync=}" ] || { IFS="${saved_ifs}"; echo "empty --lua-desync value in ${profile} strategy" >&2; return 1; }
+                saw_desync=1
+                ;;
+            *)
+                IFS="${saved_ifs}"
+                echo "${profile} strategy accepts only --payload=... and --lua-desync=... arguments; rejected token: ${token}" >&2
+                return 1
+                ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+
+    if [ "${saw_desync}" -ne 1 ]; then
+        echo "${profile} strategy must contain at least one --lua-desync=... argument" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+validate_managed_profiles() {
+    local youtube_tcp="${YOUTUBE_TCP_ENABLED:-0}"
+    local youtube_quic="${YOUTUBE_QUIC_ENABLED:-0}"
+    local discord_tcp="${DISCORD_TCP_ENABLED:-0}"
+
+    case "${youtube_tcp}" in 0|"") ;; 1) ;; *) echo "invalid YouTube TCP profile toggle" >&2; return 1 ;; esac
+    case "${youtube_quic}" in 0|"") ;; 1) ;; *) echo "invalid YouTube QUIC profile toggle" >&2; return 1 ;; esac
+    case "${discord_tcp}" in 0|"") ;; 1) ;; *) echo "invalid Discord TCP profile toggle" >&2; return 1 ;; esac
+
+    if [ "${youtube_tcp}" = "1" ]; then
+        if [ ! -s "${YOUTUBE_HOSTLIST}" ]; then
+            echo "YouTube/Google hostlist is missing or empty: ${YOUTUBE_HOSTLIST}" >&2
+            return 1
+        fi
+        validate_strategy_arguments "YouTube/Google TCP" "${YOUTUBE_TCP_ARGS:-}" || return 1
+    fi
+
+    if [ "${youtube_quic}" = "1" ]; then
+        if [ ! -s "${YOUTUBE_HOSTLIST}" ]; then
+            echo "YouTube/Google hostlist is missing or empty: ${YOUTUBE_HOSTLIST}" >&2
+            return 1
+        fi
+        validate_strategy_arguments "YouTube/Google QUIC" "${YOUTUBE_QUIC_ARGS:-}" || return 1
+    fi
+
+    if [ "${discord_tcp}" = "1" ]; then
+        if [ ! -s "${DISCORD_HOSTLIST}" ]; then
+            echo "Discord hostlist is missing or empty: ${DISCORD_HOSTLIST}" >&2
+            return 1
+        fi
+        validate_strategy_arguments "Discord TCP" "${DISCORD_TCP_ARGS:-}" || return 1
+    fi
+
+    return 0
+}
+
 validate_udp_configuration() {
     # Additional UDP traffic is opt-in. Require ports, an L7 filter, and a
     # strategy together so an accidental partial form submission cannot
@@ -296,8 +383,8 @@ validate_udp_configuration() {
     done
     IFS="${saved_ifs}"
 
-    if [ "${includes_443}" -eq 1 ] && [ -n "${QUIC_ARGS:-}" ]; then
-        echo "Additional UDP Ports overlaps UDP/443 while the QUIC strategy is enabled; remove 443 from one profile" >&2
+    if [ "${includes_443}" -eq 1 ] && { [ -n "${QUIC_ARGS:-}" ] || [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; }; then
+        echo "Additional UDP Ports overlaps UDP/443 while a QUIC profile is enabled; remove 443 from one profile" >&2
         return 1
     fi
 
@@ -318,39 +405,7 @@ validate_udp_configuration() {
     done
     IFS="${saved_ifs}"
 
-    # Only payload selectors and Lua desync actions are accepted here.
-    # The grammar excludes quotes, shell operators, substitutions and globs.
-    case "${UDP_ARGS}" in
-        *[!a-zA-Z0-9_,.:=+/@%#\ -]*)
-            echo "UDP strategy contains unsupported characters" >&2
-            return 1
-            ;;
-    esac
-
-    IFS=' 	
-'
-    for token in ${UDP_ARGS}; do
-        case "${token}" in
-            --payload=*)
-                [ -n "${token#--payload=}" ] || { IFS="${saved_ifs}"; echo "empty --payload value in UDP strategy" >&2; return 1; }
-                ;;
-            --lua-desync=*)
-                [ -n "${token#--lua-desync=}" ] || { IFS="${saved_ifs}"; echo "empty --lua-desync value in UDP strategy" >&2; return 1; }
-                saw_desync=1
-                ;;
-            *)
-                IFS="${saved_ifs}"
-                echo "UDP strategy accepts only --payload=... and --lua-desync=... arguments; rejected token: ${token}" >&2
-                return 1
-                ;;
-        esac
-    done
-    IFS="${saved_ifs}"
-
-    if [ "${saw_desync}" -ne 1 ]; then
-        echo "UDP strategy must contain at least one --lua-desync=... argument" >&2
-        return 1
-    fi
+    validate_strategy_arguments "Additional UDP" "${UDP_ARGS}" || return 1
 
     UDP_PORTS="${normalized_ports}"
     return 0
@@ -362,6 +417,7 @@ validate_ipfw_rule_capacity() {
     local IFS_SAVED="${IFS}"
 
     validate_ipset_configuration || return 1
+    validate_managed_profiles || return 1
     validate_udp_configuration || return 1
 
     IFS=","
@@ -370,7 +426,7 @@ validate_ipfw_rule_capacity() {
     done
     IFS="${IFS_SAVED}"
 
-    if [ -n "${QUIC_ARGS}" ]; then
+    if [ -n "${QUIC_ARGS}" ] || [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; then
         rule_count=$((rule_count + 1))
     fi
     if [ -n "${UDP_PORTS}" ]; then
@@ -462,7 +518,7 @@ install_ipfw_rules() {
     done
 
     # QUIC / HTTP3 profile: UDP 443.
-    if [ -n "${QUIC_ARGS}" ]; then
+    if [ -n "${QUIC_ARGS}" ] || [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; then
         if ! /sbin/ipfw -f add ${rulenum} divert ${DIVERT_PORT} udp \
             from "${src_spec}" to any 443 \
             out not diverted not sockarg xmit ${wan_dev} >/dev/null 2>&1; then
