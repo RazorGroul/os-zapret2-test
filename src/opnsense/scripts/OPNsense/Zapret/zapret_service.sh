@@ -660,8 +660,8 @@ prepare_custom_profile_hostlists() {
             continue
         fi
         name=$("${JQ_BIN}" -r ".[${i}].name" "${CUSTOM_PROFILES_FILE}")
-        domains_count=$("${JQ_BIN}" -r "(. [${i}].domains // []) | length" "${CUSTOM_PROFILES_FILE}" 2>/dev/null)
-        excludes_count=$("${JQ_BIN}" -r "(. [${i}].exclude_domains // []) | length" "${CUSTOM_PROFILES_FILE}" 2>/dev/null)
+        domains_count=$("${JQ_BIN}" -r "(.[${i}].domains // []) | length" "${CUSTOM_PROFILES_FILE}" 2>/dev/null)
+        excludes_count=$("${JQ_BIN}" -r "(.[${i}].exclude_domains // []) | length" "${CUSTOM_PROFILES_FILE}" 2>/dev/null)
         domains_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-domains.txt"
         excludes_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-exclude.txt"
 
@@ -687,6 +687,203 @@ prepare_custom_profile_hostlists() {
         fi
         i=$((i + 1))
     done
+    return 0
+}
+
+
+validate_custom_profiles() {
+    local count i enabled name order transport ports l7 strategy ipset
+    local domains_count excludes_count j entry token saved_ifs
+    CUSTOM_PROFILE_COUNT=0
+    CUSTOM_TCP_PORTS=""
+    CUSTOM_UDP_PORTS=""
+    CUSTOM_PROFILE_ARGS=""
+    CUSTOM_PROFILE_ACTIVE=0
+
+    if [ -z "${JQ_BIN}" ] || [ ! -x "${JQ_BIN}" ]; then
+        echo "jq is required to validate custom profiles" >&2
+        return 1
+    fi
+    if [ ! -f "${CUSTOM_PROFILES_FILE}" ]; then
+        cleanup_custom_profile_lists
+        return 0
+    fi
+
+    local bytes
+    bytes=$(wc -c < "${CUSTOM_PROFILES_FILE}" | tr -d '[:space:]')
+    case "${bytes}" in ""|*[!0123456789]*) echo "could not determine custom profile JSON size" >&2; return 1 ;; esac
+    if [ "${bytes}" -gt 65536 ]; then
+        echo "custom profile JSON exceeds the 64 KiB safety limit" >&2
+        return 1
+    fi
+
+    if ! "${JQ_BIN}" -e '
+        type == "array" and length <= 8 and
+        ([.[].name] | unique | length) == length and
+        ([.[].order] | unique | length) == length and
+        all(.[]; type == "object" and
+            (.enabled | type == "boolean") and
+            (.name | type == "string") and
+            (.order | (type == "number" and floor == .)) and
+            (.transport | type == "string") and
+            (.ports | type == "string") and
+            (.l7 | (type == "array" and all(.[]; type == "string") and length > 0)) and
+            ((.domains // []) | (type == "array" and all(.[]; type == "string"))) and
+            ((.exclude_domains // []) | (type == "array" and all(.[]; type == "string"))) and
+            (.ipset | type == "string") and
+            (.strategy | type == "string")
+        )
+    ' "${CUSTOM_PROFILES_FILE}" >/dev/null 2>&1; then
+        echo "custom profiles must be a JSON array of at most 8 objects with typed fields and unique names/orders" >&2
+        return 1
+    fi
+
+    count=$("${JQ_BIN}" 'length' "${CUSTOM_PROFILES_FILE}") || return 1
+    CUSTOM_PROFILE_COUNT="${count}"
+    i=0
+    while [ "${i}" -lt "${count}" ]; do
+        enabled=$("${JQ_BIN}" -r ".[${i}].enabled" "${CUSTOM_PROFILES_FILE}")
+        name=$("${JQ_BIN}" -r ".[${i}].name" "${CUSTOM_PROFILES_FILE}")
+        order=$("${JQ_BIN}" -r ".[${i}].order | tostring" "${CUSTOM_PROFILES_FILE}")
+        transport=$("${JQ_BIN}" -r ".[${i}].transport" "${CUSTOM_PROFILES_FILE}")
+        ports=$("${JQ_BIN}" -r ".[${i}].ports" "${CUSTOM_PROFILES_FILE}")
+        l7=$("${JQ_BIN}" -r ".[${i}].l7 | join(",")" "${CUSTOM_PROFILES_FILE}")
+        strategy=$("${JQ_BIN}" -r ".[${i}].strategy" "${CUSTOM_PROFILES_FILE}")
+        ipset=$("${JQ_BIN}" -r ".[${i}].ipset" "${CUSTOM_PROFILES_FILE}")
+        domains_count=$("${JQ_BIN}" -r "(.[${i}].domains // []) | length" "${CUSTOM_PROFILES_FILE}")
+        excludes_count=$("${JQ_BIN}" -r "(.[${i}].exclude_domains // []) | length" "${CUSTOM_PROFILES_FILE}")
+
+        case "${name}" in
+            ""|*[!a-zA-Z0-9_-]*|[!a-zA-Z0-9]*)
+                echo "invalid custom profile name: ${name}" >&2
+                return 1
+                ;;
+        esac
+        if [ "${#name}" -gt 32 ]; then
+            echo "custom profile name exceeds 32 characters: ${name}" >&2
+            return 1
+        fi
+        case "${order}" in ""|*[!0123456789]*) echo "custom profile order must be an integer from 0 to 9999: ${name}" >&2; return 1 ;; esac
+        if [ "${#order}" -gt 4 ]; then
+            echo "custom profile order must be from 0 to 9999: ${name}" >&2
+            return 1
+        fi
+
+        if [ "${enabled}" != "true" ]; then
+            i=$((i + 1))
+            continue
+        fi
+
+        case "${transport}" in tcp|udp) ;; *) echo "custom profile ${name}: transport must be tcp or udp" >&2; return 1 ;; esac
+        case "${ipset}" in inherit|none|include|exclude|both) ;; *) echo "custom profile ${name}: invalid ipset mode" >&2; return 1 ;; esac
+        profile_ipset_arguments "${ipset}" || return 1
+        normalize_port_spec "${ports}" "custom profile ${name}" || return 1
+        ports="${PORT_SPEC_NORMALIZED}"
+
+        saved_ifs="${IFS}"
+        IFS=","
+        local seen_l7=","
+        for token in ${l7}; do
+            case "${transport}:${token}" in
+                tcp:http|tcp:tls|tcp:unknown|udp:quic|udp:wireguard|udp:dht|udp:discord|udp:stun|udp:unknown) ;;
+                *) IFS="${saved_ifs}"; echo "custom profile ${name}: unsupported L7 protocol ${token} for ${transport}" >&2; return 1 ;;
+            esac
+            case "${seen_l7}" in
+                *,"${token}",*) IFS="${saved_ifs}"; echo "custom profile ${name}: duplicate L7 protocol ${token}" >&2; return 1 ;;
+            esac
+            seen_l7="${seen_l7}${token},"
+        done
+        IFS="${saved_ifs}"
+
+        validate_strategy_arguments "custom profile ${name}" "${strategy}" || return 1
+        if [ "${transport}" = "udp" ] && [ "${l7}" != "quic" ] && { [ "${domains_count}" -gt 0 ] || [ "${excludes_count}" -gt 0 ]; }; then
+            echo "custom profile ${name}: hostname lists are supported only for TCP or a pure QUIC UDP profile" >&2
+            return 1
+        fi
+
+        j=0
+        while [ "${j}" -lt "${domains_count}" ]; do
+            entry=$("${JQ_BIN}" -r ".[${i}].domains[${j}]" "${CUSTOM_PROFILES_FILE}")
+            validate_profile_domain "${entry}" "custom profile ${name} domains" || return 1
+            j=$((j + 1))
+        done
+        j=0
+        while [ "${j}" -lt "${excludes_count}" ]; do
+            entry=$("${JQ_BIN}" -r ".[${i}].exclude_domains[${j}]" "${CUSTOM_PROFILES_FILE}")
+            validate_profile_domain "${entry}" "custom profile ${name} exclude_domains" || return 1
+            j=$((j + 1))
+        done
+
+        if [ "${transport}" = "tcp" ]; then
+            saved_ifs="${IFS}"
+            IFS=","
+            for token in ${ports}; do
+                case ",${CUSTOM_TCP_PORTS}," in
+                    *,"${token}",*) ;;
+                    *) CUSTOM_TCP_PORTS="${CUSTOM_TCP_PORTS:+${CUSTOM_TCP_PORTS},}${token}" ;;
+                esac
+            done
+            IFS="${saved_ifs}"
+        else
+            saved_ifs="${IFS}"
+            IFS=","
+            for token in ${ports}; do
+                case ",${CUSTOM_UDP_PORTS}," in
+                    *,"${token}",*) ;;
+                    *) CUSTOM_UDP_PORTS="${CUSTOM_UDP_PORTS:+${CUSTOM_UDP_PORTS},}${token}" ;;
+                esac
+            done
+            IFS="${saved_ifs}"
+        fi
+        i=$((i + 1))
+    done
+
+    prepare_custom_profile_hostlists || return 1
+    return 0
+}
+
+build_custom_profile_args() {
+    local profiles_json profile_json name transport ports l7 strategy ipset
+    local domains_file excludes_file profile_hostlist_args first=1
+
+    CUSTOM_PROFILE_ARGS=""
+    CUSTOM_PROFILE_ACTIVE=0
+    [ -f "${CUSTOM_PROFILES_FILE}" ] || return 0
+
+    profiles_json=$("${JQ_BIN}" -c 'sort_by(.order)[] | select(.enabled == true)' "${CUSTOM_PROFILES_FILE}") || return 1
+    [ -n "${profiles_json}" ] || return 0
+
+    while IFS= read -r profile_json; do
+        [ -n "${profile_json}" ] || continue
+        name=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.name')
+        transport=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.transport')
+        ports=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.ports')
+        l7=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.l7 | join(",")')
+        strategy=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.strategy')
+        ipset=$(printf '%s\n' "${profile_json}" | "${JQ_BIN}" -r '.ipset')
+        normalize_port_spec "${ports}" "custom profile ${name}" || return 1
+        ports="${PORT_SPEC_NORMALIZED}"
+        profile_ipset_arguments "${ipset}" || return 1
+
+        profile_hostlist_args=""
+        domains_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-domains.txt"
+        excludes_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-exclude.txt"
+        if [ -s "${domains_file}" ]; then
+            profile_hostlist_args="${profile_hostlist_args} --hostlist=${domains_file}"
+        fi
+        if [ -s "${excludes_file}" ]; then
+            profile_hostlist_args="${profile_hostlist_args} --hostlist-exclude=${excludes_file}"
+        fi
+
+        if [ "${first}" -eq 0 ]; then
+            CUSTOM_PROFILE_ARGS="${CUSTOM_PROFILE_ARGS} --new"
+        fi
+        CUSTOM_PROFILE_ARGS="${CUSTOM_PROFILE_ARGS} --filter-${transport}=${ports} --filter-l7=${l7}${profile_hostlist_args}${PROFILE_IPSET_ARGS} ${strategy}"
+        first=0
+        CUSTOM_PROFILE_ACTIVE=1
+    done <<EOF
+${profiles_json}
+EOF
     return 0
 }
 
