@@ -12,6 +12,18 @@ if [ -z "${CONFIG_FILE}" ] || [ ! -f "${CONFIG_FILE}" ] || [ -L "${CONFIG_FILE}"
     exit 1
 fi
 
+config_bytes=$(wc -c < "${CONFIG_FILE}" | tr -d '[:space:]')
+case "${config_bytes}" in
+    ""|*[!0123456789]*)
+        echo "zapret config validator: could not determine configuration size" >&2
+        exit 1
+        ;;
+esac
+if [ "${config_bytes}" -gt 65536 ]; then
+    echo "zapret config validator: configuration exceeds 64 KiB safety limit" >&2
+    exit 1
+fi
+
 LC_ALL=C awk '
 function fail(message) {
     printf "zapret config validator: %s\n", message > "/dev/stderr"
