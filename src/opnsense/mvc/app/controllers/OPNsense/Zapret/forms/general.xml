@@ -106,6 +106,34 @@
     </field>
     <field>
         <type>header</type>
+        <label>IPSet Filters</label>
+    </field>
+    <field>
+        <id>zapret.ipset.includeenabled</id>
+        <label>Enable IPSet Include Filter</label>
+        <type>checkbox</type>
+        <help><![CDATA[When enabled, apply zapret2 only to destination addresses present in the selected IPSet file. Place an IPv4/IPv6 address or CIDR per line under <code>/usr/local/etc/zapret2/</code>. The file is validated before interception starts.]]></help>
+    </field>
+    <field>
+        <id>zapret.ipset.includefile</id>
+        <label>IPSet Include Filename</label>
+        <type>text</type>
+        <help>Filename under /usr/local/etc/zapret2 (default: ipset-all.txt). Do not enter a directory path.</help>
+    </field>
+    <field>
+        <id>zapret.ipset.excludeenabled</id>
+        <label>Enable IPSet Exclude Filter</label>
+        <type>checkbox</type>
+        <help><![CDATA[When enabled, skip zapret2 for destination addresses present in the selected IPv4/IPv6 CIDR file. The default file includes common local, private, link-local, multicast, and carrier-grade NAT ranges.]]></help>
+    </field>
+    <field>
+        <id>zapret.ipset.excludefile</id>
+        <label>IPSet Exclude Filename</label>
+        <type>text</type>
+        <help>Filename under /usr/local/etc/zapret2 (default: ipset-exclude-default.txt). Do not enter a directory path.</help>
+    </field>
+    <field>
+        <type>header</type>
         <label>Host List</label>
     </field>
     <field>
