@@ -474,6 +474,222 @@ validate_tcp_ports() {
     return 0
 }
 
+
+# Normalize a comma-separated list of ports/ranges. Results are returned in
+# PORT_SPEC_NORMALIZED and PORT_SPEC_HAS_443 for rule and overlap checks.
+normalize_port_spec() {
+    local raw="$1"
+    local label="$2"
+    local item start end canonical count=0
+    local normalized=""
+    local saved_ifs="${IFS}"
+
+    raw=$(printf '%s' "${raw}" | tr -d '[:space:]')
+    case "${raw}" in
+        ""|,*|*,|*,,*|*[!0123456789,-]*)
+            echo "${label} must be a comma-separated list of ports/ranges" >&2
+            return 1
+            ;;
+    esac
+
+    PORT_SPEC_HAS_443=0
+    IFS=","
+    for item in ${raw}; do
+        count=$((count + 1))
+        if [ "${count}" -gt 30 ]; then
+            IFS="${saved_ifs}"
+            echo "${label} supports at most 30 ports or ranges" >&2
+            return 1
+        fi
+
+        case "${item}" in
+            *-*)
+                start=${item%%-*}
+                end=${item#*-}
+                case "${end}" in
+                    *-*) IFS="${saved_ifs}"; echo "invalid range in ${label}: ${item}" >&2; return 1 ;;
+                esac
+                ;;
+            *)
+                start="${item}"
+                end="${item}"
+                ;;
+        esac
+
+        case "${start}" in ""|*[!0123456789]*) IFS="${saved_ifs}"; echo "invalid port in ${label}: ${item}" >&2; return 1 ;; esac
+        case "${end}" in ""|*[!0123456789]*) IFS="${saved_ifs}"; echo "invalid port in ${label}: ${item}" >&2; return 1 ;; esac
+
+        start=$(printf '%s' "${start}" | sed 's/^0*//')
+        end=$(printf '%s' "${end}" | sed 's/^0*//')
+        [ -n "${start}" ] || start=0
+        [ -n "${end}" ] || end=0
+
+        if [ "${#start}" -gt 5 ] || [ "${#end}" -gt 5 ]; then
+            IFS="${saved_ifs}"
+            echo "port number too large in ${label}: ${item}" >&2
+            return 1
+        fi
+        if [ "${start}" -lt 1 ] || [ "${end}" -gt 65535 ] || [ "${start}" -gt "${end}" ]; then
+            IFS="${saved_ifs}"
+            echo "ports/ranges in ${label} must be ascending and within 1-65535: ${item}" >&2
+            return 1
+        fi
+        if [ "${start}" -le 443 ] && [ "${end}" -ge 443 ]; then
+            PORT_SPEC_HAS_443=1
+        fi
+
+        if [ "${start}" -eq "${end}" ]; then
+            canonical="${start}"
+        else
+            canonical="${start}-${end}"
+        fi
+        case ",${normalized}," in
+            *,"${canonical}",*) ;;
+            *) normalized="${normalized:+${normalized},}${canonical}" ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+    PORT_SPEC_NORMALIZED="${normalized}"
+    return 0
+}
+
+validate_profile_domain() {
+    local entry="$1"
+    local label="$2"
+    local domain="${entry#^}"
+    local item saved_ifs="${IFS}"
+
+    case "${entry}" in
+        ""|*[!a-zA-Z0-9.^-]*)
+            echo "invalid hostname entry in ${label}: ${entry}" >&2
+            return 1
+            ;;
+    esac
+    case "${domain}" in
+        ""|*^*|.*|*.|*..*)
+            echo "invalid hostname entry in ${label}: ${entry}" >&2
+            return 1
+            ;;
+    esac
+    if [ "${#domain}" -gt 253 ]; then
+        echo "hostname entry too long in ${label}" >&2
+        return 1
+    fi
+
+    IFS="."
+    for item in ${domain}; do
+        if [ -z "${item}" ] || [ "${#item}" -gt 63 ]; then
+            IFS="${saved_ifs}"
+            echo "invalid DNS label in ${label}: ${entry}" >&2
+            return 1
+        fi
+        case "${item}" in -*|*-) IFS="${saved_ifs}"; echo "DNS labels may not begin/end with a hyphen: ${entry}" >&2; return 1 ;; esac
+    done
+    IFS="${saved_ifs}"
+    return 0
+}
+
+profile_ipset_arguments() {
+    local mode="$1"
+    PROFILE_IPSET_ARGS=""
+
+    case "${mode}" in
+        inherit)
+            PROFILE_IPSET_ARGS="${IPSET_ARGS}"
+            ;;
+        none)
+            PROFILE_IPSET_ARGS=""
+            ;;
+        include)
+            if [ "${IPSET_INCLUDE_ENABLED:-0}" != "1" ]; then
+                echo "custom profile requests ipset=include but the IPSet include filter is disabled" >&2
+                return 1
+            fi
+            PROFILE_IPSET_ARGS=" --ipset=${ZAPRET_DIR}/${IPSET_INCLUDE_FILE:-ipset-all.txt}"
+            ;;
+        exclude)
+            if [ "${IPSET_EXCLUDE_ENABLED:-0}" != "1" ]; then
+                echo "custom profile requests ipset=exclude but the IPSet exclude filter is disabled" >&2
+                return 1
+            fi
+            PROFILE_IPSET_ARGS=" --ipset-exclude=${ZAPRET_DIR}/${IPSET_EXCLUDE_FILE:-ipset-exclude-default.txt}"
+            ;;
+        both)
+            if [ "${IPSET_INCLUDE_ENABLED:-0}" != "1" ] || [ "${IPSET_EXCLUDE_ENABLED:-0}" != "1" ]; then
+                echo "custom profile requests ipset=both but both IPSet filters are not enabled" >&2
+                return 1
+            fi
+            PROFILE_IPSET_ARGS=" --ipset=${ZAPRET_DIR}/${IPSET_INCLUDE_FILE:-ipset-all.txt} --ipset-exclude=${ZAPRET_DIR}/${IPSET_EXCLUDE_FILE:-ipset-exclude-default.txt}"
+            ;;
+        *)
+            echo "invalid ipset mode in custom profile: ${mode}" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+cleanup_custom_profile_lists() {
+    if [ -d "${CUSTOM_PROFILE_LIST_DIR}" ] && [ ! -L "${CUSTOM_PROFILE_LIST_DIR}" ]; then
+        rm -f "${CUSTOM_PROFILE_LIST_DIR}"/custom-profile-*.txt
+        rmdir "${CUSTOM_PROFILE_LIST_DIR}" 2>/dev/null || true
+    fi
+}
+
+prepare_custom_profile_hostlists() {
+    local count i enabled name domains_count excludes_count domains_file excludes_file
+
+    if [ -L "${CUSTOM_PROFILE_LIST_DIR}" ]; then
+        echo "custom profile hostlist directory must not be a symlink" >&2
+        return 1
+    fi
+    if [ -e "${CUSTOM_PROFILE_LIST_DIR}" ] && [ ! -d "${CUSTOM_PROFILE_LIST_DIR}" ]; then
+        echo "custom profile hostlist path exists but is not a directory" >&2
+        return 1
+    fi
+    mkdir -p "${CUSTOM_PROFILE_LIST_DIR}" || return 1
+    rm -f "${CUSTOM_PROFILE_LIST_DIR}"/custom-profile-*.txt
+
+    [ -f "${CUSTOM_PROFILES_FILE}" ] || return 0
+    count=$("${JQ_BIN}" 'length' "${CUSTOM_PROFILES_FILE}") || return 1
+    i=0
+    while [ "${i}" -lt "${count}" ]; do
+        enabled=$("${JQ_BIN}" -r ".[${i}].enabled" "${CUSTOM_PROFILES_FILE}")
+        if [ "${enabled}" != "true" ]; then
+            i=$((i + 1))
+            continue
+        fi
+        name=$("${JQ_BIN}" -r ".[${i}].name" "${CUSTOM_PROFILES_FILE}")
+        domains_count=$("${JQ_BIN}" -r "(. [${i}].domains // []) | length" "${CUSTOM_PROFILES_FILE}" 2>/dev/null)
+        excludes_count=$("${JQ_BIN}" -r "(. [${i}].exclude_domains // []) | length" "${CUSTOM_PROFILES_FILE}" 2>/dev/null)
+        domains_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-domains.txt"
+        excludes_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-exclude.txt"
+
+        if [ "${domains_count}" -gt 0 ]; then
+            "${JQ_BIN}" -r ".[${i}].domains[]?" "${CUSTOM_PROFILES_FILE}" > "${domains_file}" || return 1
+            chmod 600 "${domains_file}" || return 1
+        fi
+
+        if { [ "${excludes_count}" -gt 0 ] || { [ -s "${HOSTLIST_EXCLUDE}" ] && [ -r "${HOSTLIST_EXCLUDE}" ]; }; }; then
+            : > "${excludes_file}" || return 1
+            if [ -s "${HOSTLIST_EXCLUDE}" ] && [ -r "${HOSTLIST_EXCLUDE}" ]; then
+                cat "${HOSTLIST_EXCLUDE}" >> "${excludes_file}" || return 1
+                printf '\n' >> "${excludes_file}"
+            fi
+            if [ "${excludes_count}" -gt 0 ]; then
+                "${JQ_BIN}" -r ".[${i}].exclude_domains[]?" "${CUSTOM_PROFILES_FILE}" >> "${excludes_file}" || return 1
+            fi
+            if [ -s "${excludes_file}" ]; then
+                chmod 600 "${excludes_file}" || return 1
+            else
+                rm -f "${excludes_file}"
+            fi
+        fi
+        i=$((i + 1))
+    done
+    return 0
+}
+
 build_tcp_intercept_ports() {
     local combined="${PORTS:-}"
     local port
