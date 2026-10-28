@@ -4,6 +4,26 @@ All notable changes to os-zapret2 are documented in this file.
 
 ## Unreleased
 
+### Fixed
+- Avoid attaching hostname hostlists to non-QUIC UDP profiles such as Discord voice/STUN, WireGuard, DHT, and unknown UDP flows that generally cannot provide a hostname for domain matching. Pure QUIC UDP profiles continue to inherit hostlist settings.
+- Reject TCP and UDP port values with more than five significant decimal digits before numeric comparisons, preventing oversized input from reaching shell integer tests.
+- Validate generated shell configuration before every service/diagnostic source operation, rejecting unsafe expansions, quotes, duplicate or unknown variables before any GUI-controlled value can be evaluated.
+- Cap TCP/UDP port specifications at 512 characters and each custom hostname include/exclude array at 256 entries.
+
+### Added
+- Advanced JSON-defined custom profiles with ordering, transport/port filters, L7 selectors, per-profile hostname lists for TCP/pure QUIC, and per-profile IPSet selection.
+- A shared UDP divert rule covering built-in QUIC and enabled custom UDP profiles, with the individual dvtws2 filters still selecting the matching profile.
+- Optional additional UDP port/range profile with L7 filtering and strategy fields, intended for use cases such as Discord voice.
+- Validation for UDP port ranges, L7 protocol names, strategy argument grammar, QUIC port overlap, and reserved ipfw-rule capacity.
+- Optional zapret2 IPSet include/exclude filters applied to configured profiles, with strict IPv4/IPv6 CIDR file validation.
+- Managed YouTube/Google TCP and QUIC profiles plus a Discord TCP TLS profile, with dedicated hostlists and automatic TCP port interception.
+- Optional import of the legacy general and excluded-domain lists, disabled by default.
+
+### Safety
+- Additional UDP strategy input is restricted to payload selectors and Lua desync actions; invalid or incomplete profiles fail validation before installing divert rules.
+- Failed divert-rule installation removes the plugin's reserved rules and aborts service startup.
+
+
 ## v1.8.3 - 2026-08-10
 
 Most of this release was contributed by [apfilipp](https://github.com/apfilipp).

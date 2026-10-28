@@ -161,16 +161,53 @@ install_dep jq
 # The EXIT trap above is the backstop; this is the normal path.
 restore_freebsd_repo
 
-# Clone or update zapret2
-if [ -d "${ZAPRET_DIR}/.git" ]; then
-    echo "Updating existing zapret2 installation..."
-    cd "${ZAPRET_DIR}"
-    git pull --ff-only
+# Pin the engine to the release against which the profile arguments were checked.
+# Never silently follow upstream master: CLI options and strategy semantics may change.
+ZAPRET2_TAG="v1.0.6"
+ZAPRET2_COMMIT="221d7dff24bfec0cd5ac0a5070b8acef2008af3d"
+
+if [ -d "$ZAPRET_DIR/.git" ]; then
+    echo "Updating existing zapret2 installation to $ZAPRET2_TAG..."
+    # Plugin settings and hostlists are intentionally untracked in this
+    # directory. Refuse only modified engine files; keep user-owned files.
+    if ! git -C "$ZAPRET_DIR" diff --quiet --ignore-submodules -- ||
+        ! git -C "$ZAPRET_DIR" diff --cached --quiet --ignore-submodules --; then
+        echo "ERROR: tracked zapret2 engine files have local changes in $ZAPRET_DIR; back them up or revert them before updating." >&2
+        git -C "$ZAPRET_DIR" status --short >&2
+        exit 1
+    fi
+    cd "$ZAPRET_DIR"
+    git fetch --depth 1 origin "refs/tags/$ZAPRET2_TAG"
+    git checkout --detach FETCH_HEAD
 else
-    echo "Cloning zapret2..."
-    rm -rf "${ZAPRET_DIR}"
-    git clone --depth 1 "${ZAPRET_REPO}" "${ZAPRET_DIR}"
+    echo "Installing zapret2 $ZAPRET2_TAG without overwriting existing settings..."
+    _clone_tmp="${ZAPRET_DIR}.engine-install.$$"
+    if [ -e "$_clone_tmp" ]; then
+        echo "ERROR: temporary engine directory already exists: $_clone_tmp" >&2
+        exit 1
+    fi
+    git clone --depth 1 --branch "$ZAPRET2_TAG" --single-branch "$ZAPRET_REPO" "$_clone_tmp"
+    mkdir -p "$ZAPRET_DIR"
+    # cp -n adds missing engine files but never replaces settings or lists.
+    cp -Rn "$_clone_tmp"/. "$ZAPRET_DIR"/
+    rm -rf "$_clone_tmp"
 fi
+
+# In both installation paths, refuse to compile if pre-existing files differ
+# from the pinned engine. Untracked user configuration/list files are preserved.
+if ! git -C "$ZAPRET_DIR" diff --quiet --ignore-submodules -- ||
+    ! git -C "$ZAPRET_DIR" diff --cached --quiet --ignore-submodules --; then
+    echo "ERROR: existing files conflict with tracked zapret2 engine files. No existing files were overwritten; resolve the conflict and retry." >&2
+    git -C "$ZAPRET_DIR" status --short >&2
+    exit 1
+fi
+
+resolved_commit=$(git -C "$ZAPRET_DIR" rev-parse HEAD)
+if [ "$resolved_commit" != "$ZAPRET2_COMMIT" ]; then
+    echo "ERROR: zapret2 $ZAPRET2_TAG resolved to unexpected commit $resolved_commit; expected $ZAPRET2_COMMIT." >&2
+    exit 1
+fi
+echo "Using verified zapret2 $ZAPRET2_TAG ($resolved_commit)."
 
 # Compile
 echo "Compiling zapret2..."

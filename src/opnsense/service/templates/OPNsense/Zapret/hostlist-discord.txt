@@ -1,0 +1,28 @@
+dis.gd
+discord-attachments-uploads-prd.storage.googleapis.com
+discord.app
+discord.co
+discord.com
+discord.design
+discord.dev
+discord.gift
+discord.gifts
+discord.gg
+discord.media
+discord.new
+discord.store
+discord.status
+discord-activities.com
+discordactivities.com
+discordapp.com
+discordapp.net
+discordcdn.com
+discordmerch.com
+discordpartygames.com
+discordsays.com
+discordsez.com
+discordstatus.com
+stable.dl2.discordapp.net
+{% if helpers.exists('OPNsense.Zapret.discord.domains') and OPNsense.Zapret.discord.domains != '' %}
+{{ OPNsense.Zapret.discord.domains }}
+{% endif %}

@@ -18,7 +18,31 @@ trap cleanup EXIT INT TERM HUP
 mkdir -p "${state_dir}" "${log_dir}" "${bin_dir}" "${test_root}/zapret"
 
 cat > "${test_root}/zapret/zapret.conf" <<'EOF'
+ZAPRET_ENABLED="1"
 WAN_IF="opt11"
+DIVERT_PORT="989"
+PORTS="80,443"
+SOURCE_NETS=""
+HTTP_ARGS="--payload=http_req --lua-desync=fake"
+HTTPS_ARGS="--payload=tls_client_hello --lua-desync=fake"
+QUIC_ARGS=""
+UDP_PORTS=""
+UDP_FILTER_L7=""
+UDP_ARGS=""
+YOUTUBE_TCP_ENABLED="0"
+YOUTUBE_TCP_ARGS=""
+YOUTUBE_QUIC_ENABLED="0"
+YOUTUBE_QUIC_ARGS=""
+DISCORD_TCP_ENABLED="0"
+DISCORD_TCP_ARGS=""
+IPSET_INCLUDE_ENABLED="0"
+IPSET_INCLUDE_FILE="ipset-all.txt"
+IPSET_EXCLUDE_ENABLED="0"
+IPSET_EXCLUDE_FILE="ipset-exclude-default.txt"
+EXTRA_ARGS=""
+HOSTLIST_MODE="all"
+HOSTLIST_USE_LEGACY_DOMAINS="0"
+HOSTLIST_USE_LEGACY_EXCLUDES="0"
 EOF
 
 cat > "${bin_dir}/drill" <<'EOF'
@@ -57,6 +81,7 @@ chmod +x "${bin_dir}/drill" "${bin_dir}/curl" \
 PATH="${bin_dir}:${PATH}" \
 IPFW_LOG="${ipfw_log}" \
 ZAPRET_DIR="${test_root}/zapret" \
+ZAPRET_CONFIG_VALIDATOR="${repo_root}/src/opnsense/scripts/OPNsense/Zapret/validate_config.sh" \
 DRILL="${bin_dir}/drill" \
 CURL="${bin_dir}/curl" \
 IPFW="${bin_dir}/ipfw" \

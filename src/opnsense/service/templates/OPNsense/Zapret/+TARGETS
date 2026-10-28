@@ -1,3 +1,7 @@
 zapret.conf:/usr/local/etc/zapret2/zapret.conf
+custom-profiles.json:/usr/local/etc/zapret2/custom-profiles.json
 hostlist.txt:/usr/local/etc/zapret2/hostlist.txt
 hostlist-exclude.txt:/usr/local/etc/zapret2/hostlist-exclude.txt
+ipset-exclude-default.txt:/usr/local/etc/zapret2/ipset-exclude-default.txt
+hostlist-youtube.txt:/usr/local/etc/zapret2/hostlist-youtube.txt
+hostlist-discord.txt:/usr/local/etc/zapret2/hostlist-discord.txt

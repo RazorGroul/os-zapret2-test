@@ -38,6 +38,11 @@ jobs:
           sh tests/blockcheck_process_test.sh
           sh tests/strategy_test_wan_test.sh
           sh tests/zapret_rule_capacity_test.sh
+          sh tests/ipset_validation_test.sh
+          sh tests/custom_profiles_test.sh
+          sh tests/config_safety_test.sh
+          sh tests/ipfw_state_test.sh
+          sh tests/setup_engine_pin_test.sh
 
   build:
     name: Build FreeBSD ${{ matrix.major }} pkg

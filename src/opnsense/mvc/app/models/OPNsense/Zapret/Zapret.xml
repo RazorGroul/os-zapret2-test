@@ -1,7 +1,7 @@
 <model>
     <mount>//OPNsense/Zapret</mount>
     <description>Zapret2 DPI Bypass Configuration</description>
-    <version>2.1.0</version>
+    <version>2.3.0</version>
     <items>
         <general>
             <enabled type="BooleanField">
@@ -24,6 +24,11 @@
                 <Mask>/^[0-9,]+$/</Mask>
                 <ValidationMessage>Please enter comma-separated port numbers.</ValidationMessage>
             </ports>
+            <udpports type="TextField">
+                <Required>N</Required>
+                <Mask>/^[0-9,\-\s]*$/</Mask>
+                <ValidationMessage>Please enter UDP ports or ranges separated by commas (1-65535).</ValidationMessage>
+            </udpports>
             <sourcenets type="NetworkField">
                 <Required>N</Required>
                 <NetMaskAllowed>Y</NetMaskAllowed>
@@ -43,11 +48,96 @@
             <quicargs type="TextField">
                 <Required>N</Required>
             </quicargs>
+            <udpfilterl7 type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,\-]*$/</Mask>
+                <ValidationMessage>Use comma-separated protocol names containing only letters, digits, underscores, or hyphens.</ValidationMessage>
+            </udpfilterl7>
+            <udpargs type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
+                <ValidationMessage>Use zapret2 profile arguments with letters, digits, spaces, and supported argument punctuation only.</ValidationMessage>
+            </udpargs>
             <extraargs type="TextField">
                 <Required>N</Required>
             </extraargs>
         </strategy>
+        <youtube>
+            <tcpenabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </tcpenabled>
+            <tcpstrategy type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
+                <ValidationMessage>Use only zapret2 --payload, --lua-desync, and optional --out-range arguments.</ValidationMessage>
+            </tcpstrategy>
+            <quicenabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </quicenabled>
+            <quicstrategy type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
+                <ValidationMessage>Use only zapret2 --payload, --lua-desync, and optional --out-range arguments.</ValidationMessage>
+            </quicstrategy>
+            <domains type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9\.\-\^\n\r\s]*$/</Mask>
+            </domains>
+        </youtube>
+        <discord>
+            <tcpenabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </tcpenabled>
+            <tcpstrategy type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9_,.:=+ \-]*$/</Mask>
+                <ValidationMessage>Use only zapret2 --payload, --lua-desync, and optional --out-range arguments.</ValidationMessage>
+            </tcpstrategy>
+            <domains type="TextField">
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9\.\-\^\n\r\s]*$/</Mask>
+            </domains>
+        </discord>
+        <ipset>
+            <includeenabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </includeenabled>
+            <includefile type="TextField">
+                <Default>ipset-all.txt</Default>
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/</Mask>
+                <ValidationMessage>Enter a filename only, without a directory path.</ValidationMessage>
+            </includefile>
+            <excludeenabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </excludeenabled>
+            <excludefile type="TextField">
+                <Default>ipset-exclude-default.txt</Default>
+                <Required>N</Required>
+                <Mask>/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/</Mask>
+                <ValidationMessage>Enter a filename only, without a directory path.</ValidationMessage>
+            </excludefile>
+        </ipset>
+        <customprofiles>
+            <json type="TextField">
+                <Default>[]</Default>
+                <Required>N</Required>
+            </json>
+        </customprofiles>
         <hostlist>
+            <uselegacydomains type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </uselegacydomains>
+            <uselegacyexcludes type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </uselegacyexcludes>
             <mode type="OptionField">
                 <Default>all</Default>
                 <OptionValues>
@@ -59,11 +149,11 @@
             </mode>
             <domains type="TextField">
                 <Required>N</Required>
-                <Mask>/^[a-zA-Z0-9\.\-\n\r\s]*$/</Mask>
+                <Mask>/^[a-zA-Z0-9\.\-\^\n\r\s]*$/</Mask>
             </domains>
             <excludedomains type="TextField">
                 <Required>N</Required>
-                <Mask>/^[a-zA-Z0-9\.\-\n\r\s]*$/</Mask>
+                <Mask>/^[a-zA-Z0-9\.\-\^\n\r\s]*$/</Mask>
             </excludedomains>
         </hostlist>
     </items>

@@ -13,6 +13,7 @@ export LC_ALL
 
 ZAPRET_DIR="${ZAPRET_DIR:-/usr/local/etc/zapret2}"
 CONFIG="${ZAPRET_CONFIG:-${ZAPRET_DIR}/zapret.conf}"
+CONFIG_VALIDATOR="${ZAPRET_CONFIG_VALIDATOR:-/usr/local/opnsense/scripts/OPNsense/Zapret/validate_config.sh}"
 DVTWS_BIN="${DVTWS_BIN:-${ZAPRET_DIR}/binaries/my/dvtws2}"
 LUA_LIB="${LUA_LIB:-${ZAPRET_DIR}/lua/zapret-lib.lua}"
 LUA_ANTIDPI="${LUA_ANTIDPI:-${ZAPRET_DIR}/lua/zapret-antidpi.lua}"
@@ -256,6 +257,9 @@ fi
 
 if [ ! -r "${CONFIG}" ]; then
     emit_error "Zapret configuration not found; save plugin settings first."
+fi
+if [ ! -r "${CONFIG_VALIDATOR}" ] || ! /bin/sh "${CONFIG_VALIDATOR}" "${CONFIG}"; then
+    emit_error "Zapret configuration is invalid or contains unsafe shell syntax; save the plugin settings again after updating the package."
 fi
 
 . "${CONFIG}"

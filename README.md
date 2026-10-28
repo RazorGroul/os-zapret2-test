@@ -15,7 +15,7 @@ This plugin packages [bol-van/zapret2](https://github.com/bol-van/zapret2) into 
 - Auto-start on every reboot once Enable is checked.
 - `daemon -r` supervision so a dvtws2 crash auto-restarts within ~1 second.
 - A safety watchdog that auto-stops the service if a misconfigured strategy starts breaking general HTTPS — your household internet recovers in ~3 minutes without anyone touching anything.
-- **`ipfw divert` + `--sockarg` loop-guard** — matches upstream zapret's pfSense init script. An `ipfw divert` rule with `not diverted not sockarg xmit <wan>` intercepts outbound TCP on the configured ports; dvtws2 is launched with `--sockarg=0x200` so its reinjected packets sail past the rule. Combined with the upstream recipe's `pfctl -d; pfctl -e` pfil-hook reorder, this works on both bare-metal PPPoE and virtualized OPNsense (Proxmox/virtio), for both firewall-local traffic and NAT'd LAN clients. (Earlier `pf divert-to`–based 1.6.x releases broke LAN-NAT'd traffic; v1.6.5_3 reverted to the upstream ipfw recipe.)
+- **`ipfw divert` + `--sockarg` loop-guard** — matches upstream zapret's pfSense init script. An `ipfw divert` rule with `not diverted not sockarg xmit <wan>` intercepts outbound TCP on the configured ports; dvtws2 is launched with `--sockarg=0x200` so its reinjected packets sail past the rule. The service uses FreeBSD `pfilctl` to order the IPFW output hook without disabling PF. It captures the pre-start IPFW sysctls and hook positions, uses temporary marked pass-through rules only when a previously disabled IPFW ruleset needs them, and removes those owned rules/restores the captured state on stop or startup failure. If a disabled IPFW ruleset already contains unrelated rules, startup fails closed rather than enabling or rewriting it. Runtime behavior still needs testing on a separate OPNsense instance. (Earlier `pf divert-to`–based 1.6.x releases broke LAN-NAT'd traffic; v1.6.5_3 reverted to the upstream ipfw recipe.)
 
 ## Requirements
 
@@ -23,36 +23,34 @@ This plugin packages [bol-van/zapret2](https://github.com/bol-van/zapret2) into 
 - Any WAN type — PPPoE, DHCP, static, all work.
 - The plugin's `setup.sh` will install `luajit`, `jq`, `git-lite` or `git`, and `pkgconf` from FreeBSD's main repo and compile `dvtws2`. Internet access required for the one-time setup.
 
-## Installation
+## Installation (development branch)
 
-Releases ship as a real FreeBSD `.pkg`. Install with `pkg add` — OPNsense registers it like any other plugin.
+`feature/udp-port-interception` is an unreleased development branch of this fork. Do not use the upstream project's `releases/latest` URL to test these changes: that installs an upstream package without the new profiles. Build the fork on a FreeBSD host or VM and match the target OPNsense FreeBSD major version (FreeBSD 15 for OPNsense 26.7+, FreeBSD 14 for OPNsense 26.1–26.4).
+
+### Build the package
 
 ```sh
-# On the OPNsense firewall (SSH as root)
-
-# Use -freebsd15 instead of -freebsd14 on OPNsense 26.7+ (uname -r says 15.x)
-fetch -o /tmp/os-zapret2.pkg \
-    https://github.com/ugorur/os-zapret2/releases/latest/download/os-zapret2-1.8.1-freebsd14.pkg
-# (asset filename tracks PLUGIN_VERSION_PLUGIN_REVISION from Makefile — check the
-#  Releases page for the current version if the URL above 404s)
-
-pkg add /tmp/os-zapret2.pkg
-
-# Bootstrap dependencies and compile dvtws2 (~1 minute, one-time)
-/usr/local/opnsense/scripts/OPNsense/Zapret/setup.sh
+git clone --branch feature/udp-port-interception https://github.com/RazorGroul/os-zapret2-test.git
+cd os-zapret2-test
+pkg install -y jq
+sh scripts/build-pkg.sh
+# FreeBSD 15 output: dist/os-zapret2-1.9.0-freebsd15.pkg
+# FreeBSD 14 output: dist/os-zapret2-1.9.0-freebsd14.pkg
 ```
 
-> **Why `setup.sh` instead of dependencies?** OPNsense's pkg repository doesn't carry `luajit` / `jq` (those live in FreeBSD's main repo, which OPNsense ships disabled by default). `setup.sh` enables that repo for the duration of the install, fetches the deps, then restores the original repo state. The `.pkg` itself stays clean and rapid to install.
+The build runs on FreeBSD (CI uses a FreeBSD VM), stages the plugin, builds the private HTTP/3 curl client and creates a real `.pkg`. The package filename records the FreeBSD major so `pkg` will not accidentally install a package built for a different major version.
 
-After setup, navigate to **Services → Zapret DPI Bypass → Settings** in the GUI.
+### Install only on a test OPNsense instance
 
-Verify the install:
+Copy the matching package to a non-critical OPNsense test instance, then run as root:
 
 ```sh
+pkg add /tmp/os-zapret2-1.9.0-freebsd15.pkg
+/usr/local/opnsense/scripts/OPNsense/Zapret/setup.sh
 pkg info os-zapret2
 ```
 
-The plugin will also appear in **Firmware → Plugins** (as `os-zapret2`) and **System → Services** (as `Zapret2 DPI Bypass`) with start/stop controls.
+Replace the package filename with the artifact built for the target's FreeBSD major. After setup, open **Services → Zapret DPI Bypass → Settings**. Do not install this draft on a production firewall until the CI/build and runtime checks are complete.
 
 ### Uninstall
 
@@ -60,18 +58,87 @@ The plugin will also appear in **Firmware → Plugins** (as `os-zapret2`) and **
 pkg delete os-zapret2
 ```
 
-`+PRE_DEINSTALL` cleanly stops the service and removes ipfw divert rules before files are deleted. Saved settings in `config.xml` are preserved — reinstalling later picks them up.
+The package pre-deinstall script stops the service and removes its reserved `ipfw divert` rules. OPNsense settings stored in `config.xml` are preserved.
 
-### Build from source
+## Additional UDP profile
 
-```sh
-# On a FreeBSD 14 host (or in a FreeBSD VM — CI uses vmactions/freebsd-vm)
-git clone https://github.com/ugorur/os-zapret2.git
-cd os-zapret2
-pkg install -y jq
-sh scripts/build-pkg.sh
-# Output: dist/os-zapret2-<version>.pkg
+The Settings page can optionally divert one additional set of UDP ports or ranges to a separate zapret2 profile. This is intended for traffic such as Discord voice, where the transport ports and L7 filter differ from QUIC/UDP 443.
+
+- **Additional UDP Ports** accepts comma-separated numeric ports or ranges, for example `19294-19344,50000-50100`. Only numeric values from 1 to 65535 are accepted; ranges must be ascending; at most 30 entries are allowed by FreeBSD `ipfw`.
+- **Additional UDP L7 Protocol Filter** accepts zapret2 protocol names: `discord`, `stun`, `wireguard`, `dht`, `quic`, `unknown`. For Discord voice, `discord,stun` is a reasonable starting filter, not a guaranteed working strategy.
+- **Additional UDP Strategy** accepts only `--payload=...`, `--lua-desync=...`, and optional `--out-range=...` arguments. Use syntax verified against the exact installed zapret2 build; general shell syntax, paths, and arbitrary dvtws2 flags are intentionally not accepted by this field.
+- All three additional UDP fields must be configured together. Leaving all three empty preserves the current UDP behavior. If any QUIC profile is enabled, the custom port list may not contain port 443.
+- Hostname hostlists are attached only when the additional UDP L7 filter is exactly `quic`. Discord Voice/STUN, WireGuard, DHT, and unknown UDP flows generally have no hostname to match, so those profiles omit hostname hostlists and can instead be scoped using IPSet include/exclude filters. The dedicated Discord hostname list applies to the Discord TCP profile, not the UDP voice profile. Source Networks and WAN interface matching are applied to the corresponding `ipfw divert` rule.
+
+This feature adds one firewall rule for the entire additional port list, not one rule per port or range. The rule remains within the plugin's reserved range (19000–19010). This does not by itself prove a supplied desynchronization strategy is effective; test first on a non-critical OPNsense instance or during a maintenance window.
+
+## IPSet include and exclude filters
+
+The Settings page can optionally pass zapret2 `--ipset=` and `--ipset-exclude=` filters to every configured profile. Files must contain one IPv4/IPv6 address or CIDR per line. Blank lines and comments beginning with `#` are ignored. The plugin validates the file before installing divert rules, rejects unsafe filenames, malformed CIDRs, missing/empty files, and files larger than 10 MiB or 100,000 entries.
+
+- **Include filter** restricts bypass processing to destination IP addresses contained in the selected file. For the legacy list, copy the list you intend to use to `/usr/local/etc/zapret2/ipset-all.txt`, then enable the filter and keep the filename as `ipset-all.txt`.
+- **Exclude filter** skips destination IP addresses contained in the selected file. The plugin provides `ipset-exclude-default.txt` with common local/private, link-local, multicast, and carrier-grade NAT ranges. To use your own legacy exclude list, copy it to `/usr/local/etc/zapret2/ipset-exclude.txt`, then select that filename in Settings.
+- Filenames must be simple names inside `/usr/local/etc/zapret2/`; directory paths and `..` traversal are rejected. Both switches default to off so existing installations keep their prior behavior.
+
+An include IPSet can change which CDN addresses are processed and therefore should be enabled only after confirming that the list is appropriate for the intended services.
+
+## Managed service profiles
+
+The Settings page also exposes opt-in, service-specific profiles. They are placed before the general fallback profiles so a matching connection receives the intended strategy.
+
+- **YouTube / Google TCP** matches the bundled hostlist on TCP/443 with the TLS L7 filter. **YouTube / Google QUIC** matches the same hostlist on UDP/443. The two profiles have independent enable switches and strategy fields.
+- **Discord TCP** matches the bundled Discord hostlist on TCP ports `443,2053,2083,2087,2096,8443`. Enabling it also adds those ports to the `ipfw divert` interception list automatically; the generic Ports field does not have to be edited manually.
+- **Discord voice / additional UDP** uses Additional UDP Ports plus the UDP L7 filter and a strategy. A commonly used starting port list is `19294-19344,50000-50100`, with `discord,stun` as the L7 filter. This is only a profile/filter starting point; strategy effectiveness depends on the ISP and the exact zapret2 build.
+
+Managed-profile strategy fields accept verified `--payload=...`, `--lua-desync=...`, and optional `--out-range=...` tokens. Do not paste a full BAT line, classic zapret flags such as `--dpi-desync`, shell syntax, or `--new`/filter/hostlist flags into a strategy field. The plugin generates profile boundaries and filter flags itself.
+
+The bundled YouTube/Google and Discord lists are based on the supplied legacy lists. Two separate checkboxes optionally import the supplied general and exclusion domain lists into the generic hostlist templates. Both are off by default, so the old generic hostlist behavior does not change unless enabled. Extra domain fields append entries to the corresponding managed service list.
+
+## Custom profiles (advanced)
+
+Settings includes an optional JSON editor for up to eight custom zapret2 profiles. Leave the value as `[]` to keep the existing built-in profile behavior. Profiles are applied in ascending `order`, before the named YouTube/Google and Discord profiles and before the generic fallbacks. The service validates the complete JSON document and profile fields before adding interception rules; the JSON is rendered to a separate file and is never sourced as shell configuration.
+
+Example:
+
+```json
+[
+  {
+    "enabled": true,
+    "name": "discord-voice",
+    "order": 10,
+    "transport": "udp",
+    "ports": "19294-19344,50000-50100",
+    "l7": ["discord", "stun"],
+    "domains": [],
+    "exclude_domains": [],
+    "ipset": "inherit",
+    "strategy": "--payload=stun,discord_ip_discovery --lua-desync=fake:blob=fake_default_quic:repeats=6"
+  },
+  {
+    "enabled": true,
+    "name": "private-tls",
+    "order": 20,
+    "transport": "tcp",
+    "ports": "443,8443",
+    "l7": ["tls"],
+    "domains": ["example.com", "^exact.example"],
+    "exclude_domains": ["bank.example"],
+    "ipset": "inherit",
+    "strategy": "--payload=tls_client_hello --lua-desync=fake:repeats=2"
+  }
+]
 ```
+
+- `enabled` is a JSON boolean; `name` contains only letters, numbers, hyphens, or underscores. Names and integer `order` values must be unique. At most eight profile objects, 64 KiB of JSON, 256 domain entries per include/exclude array, and 512 characters per TCP/UDP port specification are accepted.
+- `transport` is `tcp` or `udp`. `ports` accepts comma-separated numbers/ranges from 1 to 65535, with ascending ranges and at most 30 entries per profile. Enabled TCP profile ports are added to the interception rules. All built-in and custom UDP ports are combined into one validated WAN-scoped divert rule, while the dvtws2 profiles retain their own filters.
+- `l7` is an array of protocol names. TCP accepts `http`, `tls`, or `unknown`; UDP accepts `quic`, `wireguard`, `dht`, `discord`, `stun`, or `unknown`.
+- `domains` and `exclude_domains` are optional hostname arrays. They are allowed for TCP profiles and pure-QUIC UDP profiles only. If `domains` is omitted or empty, the custom profile has no hostname include-list and applies to all traffic matching its transport/ports/L7 filters, subject to IPSet and exclusions; it does not inherit the global Host List Mode include-list. Set `domains` to restrict it by hostname. Non-QUIC UDP flows usually cannot provide a hostname, so use IPSet filters to scope Discord Voice/STUN or other UDP profiles.
+- `ipset` defaults to `inherit`; other values are `none`, `include`, `exclude`, or `both`. Selecting `include`, `exclude`, or `both` requires the corresponding global IPSet filter to be enabled and validated.
+- `strategy` accepts only verified `--payload=...`, `--lua-desync=...`, and optional `--out-range=...` tokens. Do not use classic zapret flags, arbitrary dvtws2 flags, file paths, shell operators, quotes, or command substitutions.
+
+Custom domain and exclusion lists are written only to the plugin-owned `/usr/local/etc/zapret2/custom-hostlists/` directory. Service stop removes these generated files. The UDP interception list is aggregated to one ipfw rule; the overall TCP rule count still must fit the plugin's reserved rule range `19000–19010`. Test custom strategies on a non-critical firewall before production use.
+
+The legacy IPSet include list is not bundled automatically. The active `ipset-all.txt` supplied in the old configuration contained only `203.0.113.113/32`, a documentation-only address, so it must **not** be used as the active include list. Copy the valid `ipset-all.txt.backup` to `/usr/local/etc/zapret2/ipset-all.txt` on OPNsense before enabling the include filter. The service validates its CIDR syntax before applying it. The legacy exclude IPSet can be uploaded separately and selected by filename; otherwise the bundled local/private-range exclusion file is available.
 
 ## Quick start
 
@@ -86,13 +153,13 @@ sh scripts/build-pkg.sh
 LAN client ──► OPNsense (ipfw divert) ──► dvtws2 (manipulates TLS ClientHello) ──► WAN ──► ISP DPI ──► destination
 ```
 
-1. Two `ipfw` divert rules (one per configured port, default 80 and 443) match outbound TCP on the WAN device and divert it to a local divert socket on port `989`. The filter `not diverted not sockarg` skips any packet already tagged by the divert path.
-2. `dvtws2` reads the diverted packets, applies the LUA-driven desync strategy you configured, and reinjects — marking its reinjects with `SO_USER_COOKIE=0x200` (via `--sockarg=0x200`) so the `not sockarg` clause above skips them on the way back out.
-3. On boot/start the plugin also runs `pfctl -d; pfctl -e` once, so pf re-registers its `pfil` hooks **after** `ipfw` — without this reorder pf would drop the reinjected packets for state mismatch on FreeBSD 13+.
-4. Reinjected packets go out the WAN. The ISP's DPI sees a TLS ClientHello it can't parse, so it doesn't match the blocklist.
-5. The destination server's TLS stack is more lenient than the DPI's, so it reassembles the modified packets and the connection completes normally.
+1. The plugin installs one `ipfw divert` rule per configured TCP port/range entry, plus a single UDP rule when UDP/443 or any additional/custom UDP ports are enabled. Rules are scoped to the selected WAN device and optionally to **Source Networks**; traffic already marked as diverted or reinjected is excluded.
+2. `dvtws2` receives the packets on the configured divert socket, chooses the first matching profile in generated argument order, applies the selected Lua desynchronization strategy, and reinjects packets. The service uses `--sockarg=0x200` and the `not diverted not sockarg` guard to prevent processing its own reinjected packets repeatedly.
+3. On start, the plugin uses `pfilctl` to place the IPFW output hook before PF in output packet-processing order, then verifies the resulting hook positions. PF remains enabled throughout; no `pfctl -d/-e` bounce is used by the normal service. The previous IPFW sysctls and hook positions are recorded and restored on stop or startup failure.
+4. Custom profiles are emitted in ascending `order`, before the managed YouTube/Google and Discord profiles and the general fallback strategies. UDP profiles share the same kernel divert rule, but `dvtws2` applies each profile's own port and L7 filter.
+5. Packets that do not match an enabled profile, or are not included by its hostname/IPSet filters, follow the remaining strategy/profile behavior or pass through without that profile's desynchronization.
 
-The `ipfw` rules live in the reserved range 19000-19010 and are reinstalled on every `configctl zapret start`, so a config reload (OPNsense save) rebuilds them cleanly.
+The service reserves rule numbers 19000–19010 and checks capacity before starting. A saved configuration reload rebuilds the rules; stopping the service removes those rules and the generated custom hostlists.
 
 ## Safety
 
@@ -100,6 +167,27 @@ The `ipfw` rules live in the reserved range 19000-19010 and are reinstalled on e
 - **Watchdog auto-stop.** Every minute, a watchdog probes `https://example.com` through the bypass. If 3 consecutive checks fail (= a misconfigured strategy is breaking general HTTPS, or dvtws2 genuinely won't stay up), the watchdog calls `configctl zapret stop` itself. That removes the `ipfw` divert rules and traffic flows through unbypassed again; full recovery in ~3 minutes without anyone touching anything. Check `tail /var/log/messages | grep zapret-watchdog` for the reason. Override the probe URL via `/usr/local/etc/zapret2/watchdog.conf` (`CONTROL_URL=https://...`).
 - **No DNS changes required.** The plugin operates at the packet level; your DNS configuration is independent. (For ISP DNS poisoning, pair this with AdGuard/Unbound DoH, which OPNsense supports natively.)
 - **WAN-only.** The `ipfw` rules are scoped with `xmit <wan_dev>`; LAN-to-LAN traffic and other interfaces are untouched.
+- **Reversible IPFW integration.** PF is not disabled during the normal service start/restart. IPFW changes are tracked in `/var/run/zapret-ipfw-state`; temporary catch-all pass rules, if required for a previously disabled IPFW instance, have ownership markers and are removed on stop/failure. If restoration fails, the state file is kept for recovery and the service reports an error. Do not ignore that warning or reboot a production firewall to work around it.
+- **Shell configuration safety.** The plugin validates its generated shell configuration before the service, watchdog, or diagnostic scripts source it. It rejects shell expansion characters (`$`, backticks, and backslashes), pathname glob characters (`*`, `?`, `[` and `]`), embedded quotes, multiline values, unknown variables, duplicate assignments, and config files larger than 64 KiB. Do not enter shell syntax into legacy strategy or Extra Arguments fields. Custom profiles are parsed as JSON and never sourced as shell.
+
+
+## Rollback and legacy-upgrade notes
+
+Perform installation and rollback on a separate test firewall first. On the new version, stop the service before removing the package so it can remove the divert rules and restore the captured IPFW state:
+
+```sh
+configctl zapret stop
+ipfw list | awk '$1 >= 19000 && $1 <= 19010'
+ipfw list 65530
+ipfw list 65531
+pkg delete os-zapret2
+```
+
+After stopping, the plugin-owned divert rules should be gone. If `/var/run/zapret-ipfw-state` remains or the service reported that restoration was incomplete, do not install an older package yet. Inspect `pfilctl heads`, `sysctl net.inet.ip.fw.enable net.inet.ip.fw.one_pass net.inet6.ip6.fw.enable`, and `ipfw list`; restore the previous state deliberately on the test firewall. Keep a copy of the package and exported OPNsense configuration until rollback is verified.
+
+Older revisions of this fork may have added rule `65534 allow ip from any to any` without an ownership marker and may have disabled/re-enabled PF to reorder hooks. New code does not delete rule 65534 automatically because an identical rule could belong to the administrator or another service. Before updating an older install, inspect `ipfw list 65534`; remove it only if you have confirmed it was left by the old plugin. Do not copy a blanket `ipfw delete 65534` command into automation.
+
+For full plugin rollback, install the previously saved package built for the same FreeBSD major and run its setup only after verifying the firewall rules and hook order are restored. OPNsense settings in `config.xml` are retained by package removal. Never use a production firewall as the first upgrade/rollback target.
 
 ## Troubleshooting
 

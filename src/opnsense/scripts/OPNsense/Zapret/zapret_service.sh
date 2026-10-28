@@ -25,6 +25,7 @@
 
 ZAPRET_DIR="/usr/local/etc/zapret2"
 CONFIG="${ZAPRET_DIR}/zapret.conf"
+CONFIG_VALIDATOR="/usr/local/opnsense/scripts/OPNsense/Zapret/validate_config.sh"
 PIDFILE="/var/run/dvtws2.pid"
 SUPERVISOR_PIDFILE="/var/run/dvtws2-supervisor.pid"
 WATCHDOG_PIDFILE="/var/run/zapret-watchdog.pid"
@@ -33,20 +34,51 @@ WATCHDOG_LOOP="/usr/local/opnsense/scripts/OPNsense/Zapret/watchdog_loop.sh"
 DVTWS_BIN="${ZAPRET_DIR}/binaries/my/dvtws2"
 HOSTLIST="${ZAPRET_DIR}/hostlist.txt"
 HOSTLIST_EXCLUDE="${ZAPRET_DIR}/hostlist-exclude.txt"
+YOUTUBE_HOSTLIST="${ZAPRET_DIR}/hostlist-youtube.txt"
+DISCORD_HOSTLIST="${ZAPRET_DIR}/hostlist-discord.txt"
 AUTOHOSTLIST="${ZAPRET_DIR}/autohostlist.txt"
+IPSET_VALIDATOR="/usr/local/opnsense/scripts/OPNsense/Zapret/validate_ipset.awk"
+IPFW_STATE_FILE="/var/run/zapret-ipfw-state"
+IPFW_PASS4_MARKER="/var/run/zapret-ipfw-pass4-owned"
+IPFW_PASS6_MARKER="/var/run/zapret-ipfw-pass6-owned"
+IPFW_PASS4_RULE=65530
+IPFW_PASS6_RULE=65531
+IPFW_BIN="/sbin/ipfw"
+SYSCTL_BIN="/sbin/sysctl"
+PFILCTL_BIN="/sbin/pfilctl"
+IPFW_STATE_HELPER="/usr/local/opnsense/scripts/OPNsense/Zapret/ipfw_state.sh"
+if [ -r "$IPFW_STATE_HELPER" ]; then
+    . "$IPFW_STATE_HELPER"
+else
+    echo "required IPFW state helper is missing: $IPFW_STATE_HELPER" >&2
+    exit 1
+fi
+STARTUP_IN_PROGRESS=0
+CUSTOM_PROFILES_FILE="${ZAPRET_DIR}/custom-profiles.json"
+CUSTOM_PROFILE_LIST_DIR="${ZAPRET_DIR}/custom-hostlists"
+JQ_BIN="/usr/local/bin/jq"
+[ -x "${JQ_BIN}" ] || JQ_BIN=$(command -v jq 2>/dev/null || true)
 LUA_LIB="${ZAPRET_DIR}/lua/zapret-lib.lua"
 LUA_ANTIDPI="${ZAPRET_DIR}/lua/zapret-antidpi.lua"
 
-# ipfw rule numbers we own. Range 19000-19010 — high enough to avoid
-# OPNsense's own rules, low enough to fire before the default-accept at
-# 65534. TCP ports start at 19000; when QUIC is enabled, the next rule
-# diverts UDP/443 (19002 with the default TCP ports 80,443).
+# ipfw rule numbers owned by this plugin. Range 19000-19010 is reserved
+# for divert rules; it is evaluated before FreeBSD's implicit rule 65535.
+# One rule number is used per configured TCP port; enabled UDP profiles
+# share one aggregated UDP port-list rule. Temporary pass-through rules,
+# if needed, use 65530/65531 and are tracked in ipfw_state.sh.
 RULE_BASE=19000
 RULE_MAX=$((RULE_BASE + 10))
 
 load_config() {
     if [ ! -f "${CONFIG}" ]; then
         echo "zapret is not running (configuration file not found — save settings first)"
+        exit 1
+    fi
+    if [ ! -r "${CONFIG_VALIDATOR}" ] || ! /bin/sh "${CONFIG_VALIDATOR}" "${CONFIG}"; then
+        echo "refusing to source invalid or unsafe zapret.conf; save the plugin settings again after updating the package" >&2
+        # Fail open even when the generated config cannot be trusted: delete
+        # only this plugin's reserved divert rules before returning an error.
+        remove_ipfw_rules
         exit 1
     fi
     . "${CONFIG}"
@@ -90,82 +122,882 @@ remove_ipfw_rules() {
 }
 
 ensure_ipfw_default_accept() {
-    # ipfw's default ruleset ends at 65535 with "deny ip from any to any"
-    # UNLESS the kernel was built with IPFIREWALL_DEFAULT_TO_ACCEPT or
-    # the sysctl is 1. On OPNsense neither is guaranteed, so we add an
-    # explicit accept-all at 65534 (just inside the default-deny) the
-    # first time we enable ipfw. Without this, loading the ipfw module
-    # instantly drops every packet the box is handling.
-    local default_accept=$(/sbin/sysctl -n net.inet.ip.fw.default_to_accept 2>/dev/null)
-    if [ "${default_accept}" != "1" ]; then
-        /sbin/ipfw -q add 65534 allow ip from any to any 2>/dev/null || true
-    fi
+    ipfw_state_ensure_passthrough
 }
 
 configure_ipfw_reinject() {
-    # Make ipfw's divert fire BEFORE pf on the outbound IPv4 path, so pf
-    # builds correct state for dvtws2's reinjected/desynced packets instead
-    # of dropping their return traffic. THE ORDER OF THESE STEPS MATTERS —
-    # it was verified live on OPNsense 26.1 / FreeBSD 14 (bare-metal PPPoE):
-    #
-    #   - With pf ahead of ipfw, the blocked site's reinjected ClientHello
-    #     goes out but the server's SYN-ACK is dropped by pf (no matching
-    #     state) and the connection hangs — even general HTTPS breaks.
-    #   - With ipfw ahead of pf, divert fires AND traffic completes: blocked
-    #     domain bypasses, untouched domains keep working.
-    #
-    # The legacy `net.inet.ip.pfil.outbound=ipfw,pf` knob USED to set this
-    # order but DOES NOT EXIST on FreeBSD 14 (the OID is gone), so it can't
-    # be relied on. The working mechanism is pfil hook (re)registration order:
-    #
-    # 1) Enable ipfw FIRST. Enabling links ipfw's hook into the `inet` pfil
-    #    head — but it appends AFTER pf (pf registered at boot). `kldload`
-    #    alone is not enough: on OPNsense ipfw is usually already resident
-    #    (e.g. blockcheck loads it then restores enable=0 on exit), so the
-    #    `kldstat || kldload` guard short-circuits and enable stays 0 — then
-    #    the divert rules are installed but ipfw evaluates NOTHING. Set it
-    #    explicitly, and set it here so the hook is linked before step 2.
-    /sbin/sysctl net.inet.ip.fw.one_pass=1 >/dev/null 2>&1
-    /sbin/sysctl net.inet.ip.fw.enable=1   >/dev/null 2>&1
-
-    # 2) THEN bounce pf. Disabling unlinks pf's hooks; re-enabling appends
-    #    them to the BACK of the chain — i.e. AFTER ipfw, which is now
-    #    already linked. Result on the outbound `inet` head:
-    #        ipfw:default   (runs first → divert)
-    #        pf:default-out (runs second → NAT/state on the final packets)
-    #    Doing this bounce BEFORE enabling ipfw (as a previous revision did)
-    #    leaves ipfw behind pf and silently breaks the bypass.
-    /sbin/pfctl -d >/dev/null 2>&1
-    /sbin/pfctl -e >/dev/null 2>&1
+    ipfw_state_configure
 }
 
-validate_ipfw_rule_capacity() {
-    local rule_capacity=$((RULE_MAX - RULE_BASE + 1))
-    local rule_count=0
-    local IFS_SAVED="${IFS}"
-    IFS=","
+validate_ipset_filename() {
+    local filename="$1"
 
-    for port in ${PORTS}; do
-        rule_count=$((rule_count + 1))
-    done
+    case "${filename}" in
+        ""|.|..|*..*|*[!a-zA-Z0-9_.-]*)
+            echo "invalid IPSet filename; use a simple filename without directories or '..': ${filename}" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
 
-    IFS="${IFS_SAVED}"
+validate_ipset_file() {
+    local file="$1"
+    local bytes=""
 
-    if [ -n "${QUIC_ARGS}" ]; then
-        rule_count=$((rule_count + 1))
+    if [ ! -f "${file}" ] || [ ! -r "${file}" ]; then
+        echo "enabled IPSet file is missing or unreadable: ${file}" >&2
+        return 1
     fi
 
-    if [ "${rule_count}" -gt "${rule_capacity}" ]; then
-        echo "configured TCP and QUIC profiles require ${rule_count} ipfw rules; reserved range ${RULE_BASE}-${RULE_MAX} has room for ${rule_capacity}" >&2
+    bytes=$(wc -c < "${file}" | tr -d '[:space:]')
+    case "${bytes}" in ''|*[!0-9]*) echo "could not determine IPSet file size: ${file}" >&2; return 1 ;; esac
+    if [ "${bytes}" -gt 10485760 ]; then
+        echo "IPSet file exceeds the 10 MiB safety limit: ${file}" >&2
+        return 1
+    fi
+
+    if [ ! -r "${IPSET_VALIDATOR}" ] || ! awk -f "${IPSET_VALIDATOR}" "${file}"; then
+        echo "IPSet file failed IPv4/IPv6 CIDR validation: ${file}" >&2
+        return 1
+    fi
+    return 0
+}
+
+validate_ipset_configuration() {
+    IPSET_ARGS=""
+    local include_enabled="${IPSET_INCLUDE_ENABLED:-0}"
+    local exclude_enabled="${IPSET_EXCLUDE_ENABLED:-0}"
+    local include_file="${IPSET_INCLUDE_FILE:-ipset-all.txt}"
+    local exclude_file="${IPSET_EXCLUDE_FILE:-ipset-exclude-default.txt}"
+    local file=""
+
+    case "${include_enabled}" in 0|"") ;; 1) ;; *) echo "invalid IPSet include toggle value" >&2; return 1 ;; esac
+    case "${exclude_enabled}" in 0|"") ;; 1) ;; *) echo "invalid IPSet exclude toggle value" >&2; return 1 ;; esac
+
+    if [ "${include_enabled}" = "1" ]; then
+        validate_ipset_filename "${include_file}" || return 1
+        file="${ZAPRET_DIR}/${include_file}"
+        validate_ipset_file "${file}" || return 1
+        IPSET_ARGS="${IPSET_ARGS} --ipset=${file}"
+    fi
+
+    if [ "${exclude_enabled}" = "1" ]; then
+        validate_ipset_filename "${exclude_file}" || return 1
+        file="${ZAPRET_DIR}/${exclude_file}"
+        validate_ipset_file "${file}" || return 1
+        IPSET_ARGS="${IPSET_ARGS} --ipset-exclude=${file}"
+    fi
+
+    return 0
+}
+
+validate_strategy_arguments() {
+    local profile="$1"
+    local value="$2"
+    local saved_ifs="${IFS}"
+    local token
+    local value_without_spaces
+    local saw_desync=0
+
+    if [ -z "${value}" ]; then
+        echo "${profile} strategy is empty" >&2
+        return 1
+    fi
+
+    # The value is later split into argv by /bin/sh. Allow ordinary
+    # spaces only as argument separators, and validate the remaining
+    # characters with a POSIX shell pattern (hyphen is the final class item).
+    # This excludes paths, shell operators, quotes, substitutions, globs,
+    # and redirections without relying on an escaped hyphen in a bracket set.
+    value_without_spaces=$(printf '%s' "${value}" | tr -d ' ')
+    case "${value_without_spaces}" in
+        *[!a-zA-Z0-9_,.:=+-]*)
+            echo "${profile} strategy contains unsupported characters" >&2
+            return 1
+            ;;
+    esac
+
+    IFS=' 	
+'
+    for token in ${value}; do
+        case "${token}" in
+            --payload=*)
+                [ -n "${token#--payload=}" ] || { IFS="${saved_ifs}"; echo "empty --payload value in ${profile} strategy" >&2; return 1; }
+                ;;
+            --lua-desync=*)
+                [ -n "${token#--lua-desync=}" ] || { IFS="${saved_ifs}"; echo "empty --lua-desync value in ${profile} strategy" >&2; return 1; }
+                saw_desync=1
+                ;;
+            --out-range=*)
+                [ -n "${token#--out-range=}" ] || { IFS="${saved_ifs}"; echo "empty --out-range value in ${profile} strategy" >&2; return 1; }
+                ;;
+            *)
+                IFS="${saved_ifs}"
+                echo "${profile} strategy accepts only --payload=..., --lua-desync=..., and --out-range=... arguments; rejected token: ${token}" >&2
+                return 1
+                ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+
+    if [ "${saw_desync}" -ne 1 ]; then
+        echo "${profile} strategy must contain at least one --lua-desync=... argument" >&2
         return 1
     fi
 
     return 0
 }
 
-# Install ipfw divert rules — one per TCP port, plus one for UDP/443 when a
-# QUIC strategy is configured. Exact form from upstream zapret's pfSense
-# script (init.d/pfsense/zapret.sh:22):
+validate_managed_profiles() {
+    local youtube_tcp="${YOUTUBE_TCP_ENABLED:-0}"
+    local youtube_quic="${YOUTUBE_QUIC_ENABLED:-0}"
+    local discord_tcp="${DISCORD_TCP_ENABLED:-0}"
+
+    case "${youtube_tcp}" in 0|"") ;; 1) ;; *) echo "invalid YouTube TCP profile toggle" >&2; return 1 ;; esac
+    case "${youtube_quic}" in 0|"") ;; 1) ;; *) echo "invalid YouTube QUIC profile toggle" >&2; return 1 ;; esac
+    case "${discord_tcp}" in 0|"") ;; 1) ;; *) echo "invalid Discord TCP profile toggle" >&2; return 1 ;; esac
+
+    if [ "${youtube_tcp}" = "1" ]; then
+        if [ ! -s "${YOUTUBE_HOSTLIST}" ]; then
+            echo "YouTube/Google hostlist is missing or empty: ${YOUTUBE_HOSTLIST}" >&2
+            return 1
+        fi
+        validate_strategy_arguments "YouTube/Google TCP" "${YOUTUBE_TCP_ARGS:-}" || return 1
+    fi
+
+    if [ "${youtube_quic}" = "1" ]; then
+        if [ ! -s "${YOUTUBE_HOSTLIST}" ]; then
+            echo "YouTube/Google hostlist is missing or empty: ${YOUTUBE_HOSTLIST}" >&2
+            return 1
+        fi
+        validate_strategy_arguments "YouTube/Google QUIC" "${YOUTUBE_QUIC_ARGS:-}" || return 1
+    fi
+
+    if [ "${discord_tcp}" = "1" ]; then
+        if [ ! -s "${DISCORD_HOSTLIST}" ]; then
+            echo "Discord hostlist is missing or empty: ${DISCORD_HOSTLIST}" >&2
+            return 1
+        fi
+        validate_strategy_arguments "Discord TCP" "${DISCORD_TCP_ARGS:-}" || return 1
+    fi
+
+    return 0
+}
+
+validate_udp_configuration() {
+    # Additional UDP traffic is opt-in. Require ports, an L7 filter, and a
+    # strategy together so an accidental partial form submission cannot
+    # divert packets into a profile that does not process them.
+    local raw_ports="${UDP_PORTS:-}"
+    local normalized_ports=""
+    local item start end canonical
+    local count=0
+    local includes_443=0
+    local saved_ifs="${IFS}"
+    local token
+
+    raw_ports=$(printf '%s' "${raw_ports}" | tr -d '[:space:]')
+    if [ "${#raw_ports}" -gt 512 ]; then
+        echo "Additional UDP Ports exceeds the 512-character safety limit" >&2
+        return 1
+    fi
+
+    if [ -z "${raw_ports}" ]; then
+        if [ -n "${UDP_ARGS:-}" ] || [ -n "${UDP_FILTER_L7:-}" ]; then
+            echo "Additional UDP Strategy and L7 filter require Additional UDP Ports" >&2
+            return 1
+        fi
+        UDP_PORTS=""
+        return 0
+    fi
+
+    if [ -z "${UDP_ARGS:-}" ] || [ -z "${UDP_FILTER_L7:-}" ]; then
+        echo "Additional UDP Ports require both a UDP L7 filter and UDP strategy" >&2
+        return 1
+    fi
+
+    case "${raw_ports}" in
+        *[!0-9,-]*|,*|*,|*,,*)
+            echo "invalid Additional UDP Ports syntax: ${raw_ports}" >&2
+            return 1
+            ;;
+    esac
+
+    # FreeBSD ipfw accepts up to 30 comma-separated port/range items in one
+    # rule. Validate and canonicalize numbers before they are used in rules.
+    IFS=","
+    for item in ${raw_ports}; do
+        count=$((count + 1))
+        if [ "${count}" -gt 30 ]; then
+            IFS="${saved_ifs}"
+            echo "Additional UDP Ports supports at most 30 ports or ranges" >&2
+            return 1
+        fi
+
+        case "${item}" in
+            *-*)
+                start=${item%%-*}
+                end=${item#*-}
+                case "${end}" in
+                    *-*) IFS="${saved_ifs}"; echo "invalid UDP port range: ${item}" >&2; return 1 ;;
+                esac
+                ;;
+            *)
+                start="${item}"
+                end="${item}"
+                ;;
+        esac
+
+        case "${start}" in ''|*[!0-9]*) IFS="${saved_ifs}"; echo "invalid UDP port: ${item}" >&2; return 1 ;; esac
+        case "${end}" in ''|*[!0-9]*) IFS="${saved_ifs}"; echo "invalid UDP port: ${item}" >&2; return 1 ;; esac
+
+        # Strip leading zeroes before numeric comparisons to avoid octal arithmetic.
+        while [ -n "${start}" ] && [ "${start#0}" != "${start}" ]; do start="${start#0}"; done
+        while [ -n "${end}" ] && [ "${end#0}" != "${end}" ]; do end="${end#0}"; done
+        [ -n "${start}" ] || start=0
+        [ -n "${end}" ] || end=0
+
+        # POSIX test may fail open on arbitrarily large integer strings.
+        # Port numbers are at most five decimal digits after normalization.
+        if [ "${#start}" -gt 5 ] || [ "${#end}" -gt 5 ]; then
+            IFS="${saved_ifs}"
+            echo "UDP port number is too large: ${item}" >&2
+            return 1
+        fi
+
+        if [ "${start}" -lt 1 ] || [ "${end}" -gt 65535 ] || [ "${start}" -gt "${end}" ]; then
+            IFS="${saved_ifs}"
+            echo "UDP ports and ranges must be within 1-65535 and ranges must be ascending: ${item}" >&2
+            return 1
+        fi
+
+        if [ "${start}" -le 443 ] && [ "${end}" -ge 443 ]; then
+            includes_443=1
+        fi
+
+        if [ "${start}" -eq "${end}" ]; then
+            canonical="${start}"
+        else
+            canonical="${start}-${end}"
+        fi
+        if [ -n "${normalized_ports}" ]; then
+            normalized_ports="${normalized_ports},${canonical}"
+        else
+            normalized_ports="${canonical}"
+        fi
+    done
+    IFS="${saved_ifs}"
+
+    if [ "${includes_443}" -eq 1 ] && { [ -n "${QUIC_ARGS:-}" ] || [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; }; then
+        echo "Additional UDP Ports overlaps UDP/443 while a QUIC profile is enabled; remove 443 from one profile" >&2
+        return 1
+    fi
+
+    # Normalize protocol names, then keep the filter to documented values.
+    UDP_FILTER_L7=$(printf '%s' "${UDP_FILTER_L7}" | tr '[:upper:]' '[:lower:]')
+    case "${UDP_FILTER_L7}" in
+        *[!a-z0-9,_-]*|,*|*,|*,,*)
+            echo "invalid UDP L7 filter syntax: ${UDP_FILTER_L7}" >&2
+            return 1
+            ;;
+    esac
+    IFS=","
+    for token in ${UDP_FILTER_L7}; do
+        case "${token}" in
+            discord|stun|wireguard|dht|quic|unknown) ;;
+            *) IFS="${saved_ifs}"; echo "unsupported UDP L7 protocol: ${token}" >&2; return 1 ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+
+    validate_strategy_arguments "Additional UDP" "${UDP_ARGS}" || return 1
+
+    UDP_PORTS="${normalized_ports}"
+    return 0
+}
+
+validate_tcp_ports() {
+    local raw="${PORTS:-}"
+    local item normalized=""
+    local saved_ifs="${IFS}"
+
+    if [ "${#raw}" -gt 512 ]; then
+        echo "TCP Ports exceeds the 512-character safety limit" >&2
+        return 1
+    fi
+
+    case "${raw}" in
+        ""|,*|*,|*,,*|*[!0-9,]*)
+            echo "TCP Ports must be a comma-separated list of port numbers from 1 to 65535" >&2
+            return 1
+            ;;
+    esac
+
+    IFS=","
+    for item in ${raw}; do
+        case "${item}" in
+            ""|*[!0-9]*)
+                IFS="${saved_ifs}"
+                echo "invalid TCP port: ${item}" >&2
+                return 1
+                ;;
+        esac
+
+        while [ -n "${item}" ] && [ "${item#0}" != "${item}" ]; do item="${item#0}"; done
+        [ -n "${item}" ] || item=0
+        # Guard before test(1): very long numeric strings can make integer
+        # comparisons fail with an error and otherwise bypass range checks.
+        if [ "${#item}" -gt 5 ]; then
+            IFS="${saved_ifs}"
+            echo "TCP port number is too large: ${item}" >&2
+            return 1
+        fi
+        if [ "${item}" -lt 1 ] || [ "${item}" -gt 65535 ]; then
+            IFS="${saved_ifs}"
+            echo "TCP port must be within 1-65535: ${item}" >&2
+            return 1
+        fi
+
+        case ",${normalized}," in
+            *,"${item}",*) ;;
+            *) normalized="${normalized:+${normalized},}${item}" ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+
+    PORTS="${normalized}"
+    return 0
+}
+
+
+# Normalize a comma-separated list of ports/ranges. Results are returned in
+# PORT_SPEC_NORMALIZED and PORT_SPEC_HAS_443 for rule and overlap checks.
+normalize_port_spec() {
+    local raw="$1"
+    local label="$2"
+    local item start end canonical count=0
+    local normalized=""
+    local saved_ifs="${IFS}"
+
+    raw=$(printf '%s' "${raw}" | tr -d '[:space:]')
+    if [ "${#raw}" -gt 512 ]; then
+        echo "${label} exceeds the 512-character safety limit" >&2
+        return 1
+    fi
+    case "${raw}" in
+        ""|,*|*,|*,,*|*[!0123456789,-]*)
+            echo "${label} must be a comma-separated list of ports/ranges" >&2
+            return 1
+            ;;
+    esac
+
+    PORT_SPEC_HAS_443=0
+    IFS=","
+    for item in ${raw}; do
+        count=$((count + 1))
+        if [ "${count}" -gt 30 ]; then
+            IFS="${saved_ifs}"
+            echo "${label} supports at most 30 ports or ranges" >&2
+            return 1
+        fi
+
+        case "${item}" in
+            *-*)
+                start=${item%%-*}
+                end=${item#*-}
+                case "${end}" in
+                    *-*) IFS="${saved_ifs}"; echo "invalid range in ${label}: ${item}" >&2; return 1 ;;
+                esac
+                ;;
+            *)
+                start="${item}"
+                end="${item}"
+                ;;
+        esac
+
+        case "${start}" in ""|*[!0123456789]*) IFS="${saved_ifs}"; echo "invalid port in ${label}: ${item}" >&2; return 1 ;; esac
+        case "${end}" in ""|*[!0123456789]*) IFS="${saved_ifs}"; echo "invalid port in ${label}: ${item}" >&2; return 1 ;; esac
+
+        while [ -n "${start}" ] && [ "${start#0}" != "${start}" ]; do start="${start#0}"; done
+        while [ -n "${end}" ] && [ "${end#0}" != "${end}" ]; do end="${end#0}"; done
+        [ -n "${start}" ] || start=0
+        [ -n "${end}" ] || end=0
+
+        if [ "${#start}" -gt 5 ] || [ "${#end}" -gt 5 ]; then
+            IFS="${saved_ifs}"
+            echo "port number too large in ${label}: ${item}" >&2
+            return 1
+        fi
+        if [ "${start}" -lt 1 ] || [ "${end}" -gt 65535 ] || [ "${start}" -gt "${end}" ]; then
+            IFS="${saved_ifs}"
+            echo "ports/ranges in ${label} must be ascending and within 1-65535: ${item}" >&2
+            return 1
+        fi
+        if [ "${start}" -le 443 ] && [ "${end}" -ge 443 ]; then
+            PORT_SPEC_HAS_443=1
+        fi
+
+        if [ "${start}" -eq "${end}" ]; then
+            canonical="${start}"
+        else
+            canonical="${start}-${end}"
+        fi
+        case ",${normalized}," in
+            *,"${canonical}",*) ;;
+            *) normalized="${normalized:+${normalized},}${canonical}" ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+    PORT_SPEC_NORMALIZED="${normalized}"
+    return 0
+}
+
+validate_profile_domain() {
+    local entry="$1"
+    local label="$2"
+    local domain="${entry#^}"
+    local item saved_ifs="${IFS}"
+
+    case "${entry}" in
+        ""|*[!a-zA-Z0-9.^-]*)
+            echo "invalid hostname entry in ${label}: ${entry}" >&2
+            return 1
+            ;;
+    esac
+    case "${domain}" in
+        ""|*^*|.*|*.|*..*)
+            echo "invalid hostname entry in ${label}: ${entry}" >&2
+            return 1
+            ;;
+    esac
+    if [ "${#domain}" -gt 253 ]; then
+        echo "hostname entry too long in ${label}" >&2
+        return 1
+    fi
+
+    IFS="."
+    for item in ${domain}; do
+        if [ -z "${item}" ] || [ "${#item}" -gt 63 ]; then
+            IFS="${saved_ifs}"
+            echo "invalid DNS label in ${label}: ${entry}" >&2
+            return 1
+        fi
+        case "${item}" in -*|*-) IFS="${saved_ifs}"; echo "DNS labels may not begin/end with a hyphen: ${entry}" >&2; return 1 ;; esac
+    done
+    IFS="${saved_ifs}"
+    return 0
+}
+
+profile_ipset_arguments() {
+    local mode="$1"
+    PROFILE_IPSET_ARGS=""
+
+    case "${mode}" in
+        inherit)
+            PROFILE_IPSET_ARGS="${IPSET_ARGS}"
+            ;;
+        none)
+            PROFILE_IPSET_ARGS=""
+            ;;
+        include)
+            if [ "${IPSET_INCLUDE_ENABLED:-0}" != "1" ]; then
+                echo "custom profile requests ipset=include but the IPSet include filter is disabled" >&2
+                return 1
+            fi
+            PROFILE_IPSET_ARGS=" --ipset=${ZAPRET_DIR}/${IPSET_INCLUDE_FILE:-ipset-all.txt}"
+            ;;
+        exclude)
+            if [ "${IPSET_EXCLUDE_ENABLED:-0}" != "1" ]; then
+                echo "custom profile requests ipset=exclude but the IPSet exclude filter is disabled" >&2
+                return 1
+            fi
+            PROFILE_IPSET_ARGS=" --ipset-exclude=${ZAPRET_DIR}/${IPSET_EXCLUDE_FILE:-ipset-exclude-default.txt}"
+            ;;
+        both)
+            if [ "${IPSET_INCLUDE_ENABLED:-0}" != "1" ] || [ "${IPSET_EXCLUDE_ENABLED:-0}" != "1" ]; then
+                echo "custom profile requests ipset=both but both IPSet filters are not enabled" >&2
+                return 1
+            fi
+            PROFILE_IPSET_ARGS=" --ipset=${ZAPRET_DIR}/${IPSET_INCLUDE_FILE:-ipset-all.txt} --ipset-exclude=${ZAPRET_DIR}/${IPSET_EXCLUDE_FILE:-ipset-exclude-default.txt}"
+            ;;
+        *)
+            echo "invalid ipset mode in custom profile: ${mode}" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+cleanup_custom_profile_lists() {
+    if [ -d "${CUSTOM_PROFILE_LIST_DIR}" ] && [ ! -L "${CUSTOM_PROFILE_LIST_DIR}" ]; then
+        rm -f "${CUSTOM_PROFILE_LIST_DIR}"/custom-profile-*.txt
+        rmdir "${CUSTOM_PROFILE_LIST_DIR}" 2>/dev/null || true
+    fi
+}
+
+
+prepare_custom_profile_hostlists() {
+    local rows name transport l7 hostname_supported domains_count excludes_count
+    local domains_file excludes_file
+
+    # A missing config means there are no custom profiles to keep; clean
+    # only generated plugin-owned files during the preparation/cleanup phase.
+    if [ ! -f "${CUSTOM_PROFILES_FILE}" ]; then
+        cleanup_custom_profile_lists
+        return 0
+    fi
+
+    if [ -L "${CUSTOM_PROFILE_LIST_DIR}" ]; then
+        echo "custom profile hostlist directory must not be a symlink" >&2
+        return 1
+    fi
+    if [ -e "${CUSTOM_PROFILE_LIST_DIR}" ] && [ ! -d "${CUSTOM_PROFILE_LIST_DIR}" ]; then
+        echo "custom profile hostlist path exists but is not a directory" >&2
+        return 1
+    fi
+    mkdir -p "${CUSTOM_PROFILE_LIST_DIR}" || return 1
+    rm -f "${CUSTOM_PROFILE_LIST_DIR}"/custom-profile-*.txt
+
+    rows=$("${JQ_BIN}" -r '
+        sort_by(.order)[] | select(.enabled == true) |
+        [.name, .transport, (.l7|join(",")),
+         ((.domains // [])|length|tostring),
+         ((.exclude_domains // [])|length|tostring)] | join("|")
+    ' "${CUSTOM_PROFILES_FILE}" | tr -d '\r') || return 1
+    if [ -z "${rows}" ]; then
+        cleanup_custom_profile_lists
+        return 0
+    fi
+
+    while IFS='|' read -r name transport l7 domains_count excludes_count; do
+        [ -n "${name}" ] || continue
+        domains_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-domains.txt"
+        excludes_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-exclude.txt"
+
+        # Hostname lists only make sense for TCP and pure QUIC UDP. Never
+        # apply global hostname exclusions to Discord/STUN, WireGuard, DHT,
+        # or unknown UDP traffic that has no hostname.
+        hostname_supported=0
+        case "${transport}:${l7}" in
+            tcp:*|udp:quic) hostname_supported=1 ;;
+        esac
+        if [ "${hostname_supported}" -eq 1 ]; then
+            if [ "${domains_count}" -gt 0 ]; then
+                "${JQ_BIN}" -r --arg name "${name}" '.[] | select(.name == $name) | .domains[]' "${CUSTOM_PROFILES_FILE}" | tr -d '\r' > "${domains_file}" || return 1
+                chmod 600 "${domains_file}" || return 1
+            fi
+
+            if { [ "${excludes_count}" -gt 0 ] || { [ -s "${HOSTLIST_EXCLUDE}" ] && [ -r "${HOSTLIST_EXCLUDE}" ]; }; }; then
+                : > "${excludes_file}" || return 1
+                if [ -s "${HOSTLIST_EXCLUDE}" ] && [ -r "${HOSTLIST_EXCLUDE}" ]; then
+                    cat "${HOSTLIST_EXCLUDE}" >> "${excludes_file}" || return 1
+                    printf '\n' >> "${excludes_file}"
+                fi
+                if [ "${excludes_count}" -gt 0 ]; then
+                    "${JQ_BIN}" -r --arg name "${name}" '.[] | select(.name == $name) | .exclude_domains[]' "${CUSTOM_PROFILES_FILE}" | tr -d '\r' >> "${excludes_file}" || return 1
+                fi
+                if [ -s "${excludes_file}" ]; then
+                    chmod 600 "${excludes_file}" || return 1
+                else
+                    rm -f "${excludes_file}"
+                fi
+            fi
+        fi
+    done <<EOF
+${rows}
+EOF
+    return 0
+}
+validate_custom_profiles() {
+    local count rows enabled name order transport ports l7 strategy ipset
+    local domains_count excludes_count token saved_ifs
+    CUSTOM_PROFILE_COUNT=0
+    CUSTOM_TCP_PORTS=""
+    CUSTOM_UDP_PORTS=""
+    CUSTOM_PROFILE_ARGS=""
+    CUSTOM_PROFILE_ACTIVE=0
+
+    if [ -z "${JQ_BIN}" ] || [ ! -x "${JQ_BIN}" ]; then
+        echo "jq is required to validate custom profiles" >&2
+        return 1
+    fi
+    if [ ! -f "${CUSTOM_PROFILES_FILE}" ]; then
+        return 0
+    fi
+
+    local bytes
+    bytes=$(wc -c < "${CUSTOM_PROFILES_FILE}" | tr -d '[:space:]')
+    case "${bytes}" in
+        ""|*[!0123456789]*)
+            echo "could not determine custom profile JSON size" >&2
+            return 1
+            ;;
+    esac
+    if [ "${bytes}" -gt 65536 ]; then
+        echo "custom profile JSON exceeds the 64 KiB safety limit" >&2
+        return 1
+    fi
+
+    # Validate the JSON schema and hostname syntax in one jq pass. This bounds
+    # the input before shell processing and keeps the validator cheap even on
+    # low-powered FreeBSD systems. The row separator is safe because every
+    # exported field is restricted to exclude the pipe and newline characters.
+    if ! "${JQ_BIN}" -e '
+        def valid_host:
+            (if startswith("^") then .[1:] else . end) as $host
+            | ($host | length) > 0
+              and ($host | length) <= 253
+              and (($host | split(".")) |
+                   all(.[]; length >= 1 and length <= 63 and
+                       test("^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$")));
+        type == "array" and length <= 8 and
+        ([.[].name] | unique | length) == length and
+        ([.[].order] | unique | length) == length and
+        all(.[]; type == "object" and
+            (.enabled | type == "boolean") and
+            (.name | if type == "string" then length >= 1 and length <= 32 and test("^[A-Za-z0-9][A-Za-z0-9_-]*$") else false end) and
+            (.order | if type == "number" then floor == . and . >= 0 and . <= 9999 else false end) and
+            (.transport | if type == "string" then . == "tcp" or . == "udp" else false end) and
+            (.ports | if type == "string" then length <= 512 and test("^[0-9, -]*$") else false end) and
+            (.l7 | if type == "array" then length > 0 and all(.[]; if type == "string" then test("^[A-Za-z0-9_-]+$") else false end) else false end) and
+            ((.domains // []) | if type == "array" then length <= 256 and all(.[]; if type == "string" then valid_host else false end) else false end) and
+            ((.exclude_domains // []) | if type == "array" then length <= 256 and all(.[]; if type == "string" then valid_host else false end) else false end) and
+            ((.ipset // "inherit") | if type == "string" then . == "inherit" or . == "none" or . == "include" or . == "exclude" or . == "both" else false end) and
+            (.strategy | if type == "string" then length <= 2048 and test("^[A-Za-z0-9_,.:=+ -]*$") else false end) and
+            (if .enabled and .transport == "udp" and .l7 != ["quic"] then
+                ((.domains // []) | length == 0) and ((.exclude_domains // []) | length == 0)
+             else true end)
+        )
+    ' "${CUSTOM_PROFILES_FILE}" >/dev/null 2>&1; then
+        echo "custom profiles contain invalid JSON fields, hostname entries, or duplicate names/orders" >&2
+        return 1
+    fi
+
+    count=$("${JQ_BIN}" 'length' "${CUSTOM_PROFILES_FILE}") || return 1
+    CUSTOM_PROFILE_COUNT="${count}"
+    [ "${count}" -gt 0 ] || return 0
+
+    rows=$("${JQ_BIN}" -r '
+        sort_by(.order)[] | select(.enabled == true) |
+        [(.enabled|tostring), .name, (.order|tostring), .transport, .ports,
+         (.l7|join(",")), .strategy, (.ipset // "inherit"),
+         ((.domains // [])|length|tostring),
+         ((.exclude_domains // [])|length|tostring)] | join("|")
+    ' "${CUSTOM_PROFILES_FILE}" | tr -d '\r') || return 1
+
+    while IFS='|' read -r enabled name order transport ports l7 strategy ipset domains_count excludes_count; do
+        [ -n "${name}" ] || continue
+        case "${order}" in
+            ""|*[!0123456789]*)
+                echo "custom profile order must be an integer from 0 to 9999: ${name}" >&2
+                return 1
+                ;;
+        esac
+
+        case "${transport}" in
+            tcp|udp) ;;
+            *) echo "custom profile ${name}: transport must be tcp or udp" >&2; return 1 ;;
+        esac
+        case "${ipset}" in
+            inherit|none|include|exclude|both) ;;
+            *) echo "custom profile ${name}: invalid ipset mode" >&2; return 1 ;;
+        esac
+        profile_ipset_arguments "${ipset}" || return 1
+        normalize_port_spec "${ports}" "custom profile ${name}" || return 1
+        ports="${PORT_SPEC_NORMALIZED}"
+
+        saved_ifs="${IFS}"
+        IFS=","
+        local seen_l7=","
+        for token in ${l7}; do
+            case "${transport}:${token}" in
+                tcp:http|tcp:tls|tcp:unknown|udp:quic|udp:wireguard|udp:dht|udp:discord|udp:stun|udp:unknown) ;;
+                *) IFS="${saved_ifs}"; echo "custom profile ${name}: unsupported L7 protocol ${token} for ${transport}" >&2; return 1 ;;
+            esac
+            case "${seen_l7}" in
+                *,"${token}",*) IFS="${saved_ifs}"; echo "custom profile ${name}: duplicate L7 protocol ${token}" >&2; return 1 ;;
+            esac
+            seen_l7="${seen_l7}${token},"
+        done
+        IFS="${saved_ifs}"
+
+        validate_strategy_arguments "custom profile ${name}" "${strategy}" || return 1
+
+        if [ "${transport}" = "tcp" ]; then
+            saved_ifs="${IFS}"
+            IFS=","
+            for token in ${ports}; do
+                case ",${CUSTOM_TCP_PORTS}," in
+                    *,"${token}",*) ;;
+                    *) CUSTOM_TCP_PORTS="${CUSTOM_TCP_PORTS:+${CUSTOM_TCP_PORTS},}${token}" ;;
+                esac
+            done
+            IFS="${saved_ifs}"
+        else
+            saved_ifs="${IFS}"
+            IFS=","
+            for token in ${ports}; do
+                case ",${CUSTOM_UDP_PORTS}," in
+                    *,"${token}",*) ;;
+                    *) CUSTOM_UDP_PORTS="${CUSTOM_UDP_PORTS:+${CUSTOM_UDP_PORTS},}${token}" ;;
+                esac
+            done
+            IFS="${saved_ifs}"
+        fi
+    done <<EOF
+${rows}
+EOF
+    return 0
+}
+
+build_custom_profile_args() {
+    local rows name transport ports l7 strategy ipset
+    local domains_file excludes_file profile_hostlist_args first=1
+
+    CUSTOM_PROFILE_ARGS=""
+    CUSTOM_PROFILE_ACTIVE=0
+    [ -f "${CUSTOM_PROFILES_FILE}" ] || return 0
+
+    rows=$("${JQ_BIN}" -r '
+        sort_by(.order)[] | select(.enabled == true) |
+        [.name, .transport, .ports, (.l7|join(",")), .strategy, (.ipset // "inherit")] | join("|")
+    ' "${CUSTOM_PROFILES_FILE}" | tr -d '\r') || return 1
+    [ -n "${rows}" ] || return 0
+
+    while IFS='|' read -r name transport ports l7 strategy ipset; do
+        [ -n "${name}" ] || continue
+        normalize_port_spec "${ports}" "custom profile ${name}" || return 1
+        ports="${PORT_SPEC_NORMALIZED}"
+        profile_ipset_arguments "${ipset}" || return 1
+
+        profile_hostlist_args=""
+        domains_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-domains.txt"
+        excludes_file="${CUSTOM_PROFILE_LIST_DIR}/custom-profile-${name}-exclude.txt"
+        if [ -s "${domains_file}" ]; then
+            profile_hostlist_args="${profile_hostlist_args} --hostlist=${domains_file}"
+        fi
+        if [ -s "${excludes_file}" ]; then
+            profile_hostlist_args="${profile_hostlist_args} --hostlist-exclude=${excludes_file}"
+        fi
+
+        if [ "${first}" -eq 0 ]; then
+            CUSTOM_PROFILE_ARGS="${CUSTOM_PROFILE_ARGS} --new"
+        fi
+        CUSTOM_PROFILE_ARGS="${CUSTOM_PROFILE_ARGS} --filter-${transport}=${ports} --filter-l7=${l7}${profile_hostlist_args}${PROFILE_IPSET_ARGS} ${strategy}"
+        first=0
+        CUSTOM_PROFILE_ACTIVE=1
+    done <<EOF
+${rows}
+EOF
+    return 0
+}
+
+build_tcp_intercept_ports() {
+    local combined="${PORTS:-}"
+    local port saved_ifs="${IFS}"
+
+    # Named TCP profiles require interception on their own ports.
+    if [ "${YOUTUBE_TCP_ENABLED:-0}" = "1" ] || [ "${DISCORD_TCP_ENABLED:-0}" = "1" ]; then
+        case ",${combined}," in
+            *,443,*) ;;
+            *) combined="${combined:+${combined},}443" ;;
+        esac
+    fi
+
+    if [ "${DISCORD_TCP_ENABLED:-0}" = "1" ]; then
+        for port in 2053 2083 2087 2096 8443; do
+            case ",${combined}," in
+                *,"${port}",*) ;;
+                *) combined="${combined:+${combined},}${port}" ;;
+            esac
+        done
+    fi
+
+    IFS=","
+    for port in ${CUSTOM_TCP_PORTS}; do
+        case ",${combined}," in
+            *,"${port}",*) ;;
+            *) combined="${combined:+${combined},}${port}" ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+    printf '%s\n' "${combined}"
+}
+
+build_udp_intercept_ports() {
+    local combined=""
+    local port count=0 saved_ifs="${IFS}"
+
+    # Every UDP profile shares one divert rule; dvtws2 selects a profile
+    # based on its own ordered --filter-udp and --filter-l7 filters.
+    if [ -n "${QUIC_ARGS:-}" ] || [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; then
+        combined="443"
+    fi
+
+    IFS=","
+    for port in ${UDP_PORTS}; do
+        case ",${combined}," in
+            *,"${port}",*) ;;
+            *) combined="${combined:+${combined},}${port}" ;;
+        esac
+    done
+    for port in ${CUSTOM_UDP_PORTS}; do
+        case ",${combined}," in
+            *,"${port}",*) ;;
+            *) combined="${combined:+${combined},}${port}" ;;
+        esac
+    done
+    IFS="${saved_ifs}"
+
+    IFS=","
+    for port in ${combined}; do
+        count=$((count + 1))
+    done
+    IFS="${saved_ifs}"
+    if [ "${count}" -gt 30 ]; then
+        echo "combined UDP interception list exceeds ipfw's 30-item limit" >&2
+        return 1
+    fi
+    printf '%s\n' "${combined}"
+}
+
+validate_ipfw_rule_capacity() {
+    local rule_capacity=$((RULE_MAX - RULE_BASE + 1))
+    local rule_count=0
+    local IFS_SAVED="${IFS}"
+
+    validate_tcp_ports || return 1
+    validate_ipset_configuration || return 1
+    validate_managed_profiles || return 1
+    validate_udp_configuration || return 1
+    validate_custom_profiles || return 1
+
+    TCP_INTERCEPT_PORTS=$(build_tcp_intercept_ports)
+    UDP_INTERCEPT_PORTS=$(build_udp_intercept_ports) || return 1
+
+    IFS=","
+    for port in ${TCP_INTERCEPT_PORTS}; do
+        rule_count=$((rule_count + 1))
+    done
+    IFS="${IFS_SAVED}"
+
+    if [ -n "${UDP_INTERCEPT_PORTS}" ]; then
+        rule_count=$((rule_count + 1))
+    fi
+
+    if [ "${rule_count}" -gt "${rule_capacity}" ]; then
+        echo "configured TCP and aggregated UDP interception require ${rule_count} ipfw rules; reserved range ${RULE_BASE}-${RULE_MAX} has room for ${rule_capacity}" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# Install ipfw divert rules — one per TCP interception port, plus one
+# aggregated UDP rule for built-in QUIC, the additional UDP profile, and all
+# enabled custom UDP profiles. The combined UDP list may contain up to 30
+# comma-separated ports/ranges.
 #
 #   divert 989 tcp from any to any 80,443 out not diverted not sockarg
 #
@@ -176,8 +1008,8 @@ validate_ipfw_rule_capacity() {
 #   divert socket for IPv6 and falls back to `diverted`-only.)
 #
 # Either of these flags alone was insufficient in our virtio tests
-# (million-packet loops). Combined with the `pfctl -d ; pfctl -e`
-# bounce in configure_ipfw_reinject above, traffic flows correctly.
+# (million-packet loops). configure_ipfw_reinject uses pfilctl to order the
+# output hook while keeping PF enabled; see ipfw_state.sh for rollback.
 #
 # `xmit $wan_dev` scopes to outbound on the WAN device so we only
 # intercept traffic actually leaving the firewall.
@@ -213,39 +1045,54 @@ install_ipfw_rules() {
     local IFS_SAVED="${IFS}"
     IFS=","
 
-    for port in ${PORTS}; do
+    for port in ${TCP_INTERCEPT_PORTS}; do
         # src_spec is quoted: IFS is "," here and the address list must
         # reach ipfw as a single token.
         if ! /sbin/ipfw -f add ${rulenum} divert ${DIVERT_PORT} tcp \
             from "${src_spec}" to any ${port} \
             out not diverted not sockarg xmit ${wan_dev} >/dev/null 2>&1; then
+            remove_ipfw_rules
+            IFS="${IFS_SAVED}"
             echo "failed to install ipfw divert rule for port ${port} from '${src_spec}' — check Source Networks syntax" >&2
+            return 1
         fi
 
         if [ -n "${SOURCE_NETS}" ]; then
-            /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} tcp \
+            if ! /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} tcp \
                 from me to any ${port} \
-                out not diverted not sockarg xmit ${wan_dev}
+                out not diverted not sockarg xmit ${wan_dev}; then
+                remove_ipfw_rules
+                IFS="${IFS_SAVED}"
+                echo "failed to install ipfw rule for firewall-originated TCP traffic on port ${port}" >&2
+                return 1
+            fi
         fi
 
         rulenum=$((rulenum + 1))
     done
 
-    # QUIC / HTTP3 profile: UDP 443. Installed only when a QUIC strategy is
-    # configured, so users who never fill in the QUIC field keep exactly the
-    # pre-1.8.3 rule set. It takes the next free number after the TCP ports
-    # (19002 with the default PORTS="80,443").
-    if [ -n "${QUIC_ARGS}" ]; then
+    # All enabled UDP profiles share one divert rule. The comma-separated
+    # union is validated before installation; dvtws2 then selects the first
+    # matching profile by its ordered transport/port/L7 filters.
+    if [ -n "${UDP_INTERCEPT_PORTS}" ]; then
         if ! /sbin/ipfw -f add ${rulenum} divert ${DIVERT_PORT} udp \
-            from "${src_spec}" to any 443 \
+            from "${src_spec}" to any "${UDP_INTERCEPT_PORTS}" \
             out not diverted not sockarg xmit ${wan_dev} >/dev/null 2>&1; then
-            echo "failed to install ipfw QUIC divert rule from '${src_spec}' — check Source Networks syntax" >&2
+            remove_ipfw_rules
+            IFS="${IFS_SAVED}"
+            echo "failed to install UDP divert rule for ${UDP_INTERCEPT_PORTS} from '${src_spec}'" >&2
+            return 1
         fi
 
         if [ -n "${SOURCE_NETS}" ]; then
-            /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} udp \
-                from me to any 443 \
-                out not diverted not sockarg xmit ${wan_dev}
+            if ! /sbin/ipfw -qf add ${rulenum} divert ${DIVERT_PORT} udp \
+                from me to any "${UDP_INTERCEPT_PORTS}" \
+                out not diverted not sockarg xmit ${wan_dev}; then
+                remove_ipfw_rules
+                IFS="${IFS_SAVED}"
+                echo "failed to install UDP rule for firewall-originated traffic" >&2
+                return 1
+            fi
         fi
 
         rulenum=$((rulenum + 1))
@@ -262,7 +1109,12 @@ start_service() {
         exit 0
     fi
 
-    validate_ipfw_rule_capacity || exit 1
+    if ! validate_ipfw_rule_capacity; then
+        # Fail open: an invalid config must not leave stale divert rules
+        # pointing to a dead or mismatched dvtws2 listener.
+        remove_ipfw_rules
+        exit 1
+    fi
 
     # Already running?
     if [ -f "${SUPERVISOR_PIDFILE}" ] && kill -0 "$(cat ${SUPERVISOR_PIDFILE})" 2>/dev/null; then
@@ -270,17 +1122,40 @@ start_service() {
         exit 0
     fi
 
+    ipfw_state_recover_stale || exit 1
+
+    # Remove stale plugin-owned divert rules before any fallible startup step.
+    # If dvtws2, hostlist generation, interface resolution or kernel setup fails,
+    # traffic must fail open rather than be diverted into a dead socket.
+    remove_ipfw_rules
+
     if [ ! -x "${DVTWS_BIN}" ]; then
         echo "dvtws2 binary not found at ${DVTWS_BIN} — run setup.sh first" >&2
         exit 1
     fi
 
+    # Generate only plugin-owned per-profile hostlists after full validation
+    # and before dvtws2 opens them. Validation itself remains side-effect free.
+    prepare_custom_profile_hostlists || {
+        echo "failed to prepare custom profile hostlists" >&2
+        exit 1
+    }
+
     # Load required kernel modules. ipdivert is the divert socket
     # backend; ipfw is the firewall that owns our divert rules.
+    IPFW_MODULE_WAS_LOADED=1
+    kldstat -q -m ipfw || IPFW_MODULE_WAS_LOADED=0
+
+    # Arm rollback before loading a module: even an early startup error must
+    # restore IPFW to the state observed before the plugin touched it.
+    STARTUP_IN_PROGRESS=1
     kldstat -q -m ipdivert || kldload ipdivert
     kldstat -q -m ipfw     || kldload ipfw
-    ensure_ipfw_default_accept
-    configure_ipfw_reinject
+
+    # Capture pre-start sysctls/hooks before changing any network state.
+    ipfw_state_capture || exit 1
+    ensure_ipfw_default_accept || exit 1
+    configure_ipfw_reinject || exit 1
 
     local wan_dev=$(resolve_interface "${WAN_IF}")
     if [ -z "${wan_dev}" ]; then
@@ -288,18 +1163,16 @@ start_service() {
         exit 1
     fi
 
-    # Build dvtws2 args
+    # Build dvtws2 args. The managed service profiles are intentionally
+    # ordered ahead of the generic TCP/QUIC profiles because zapret2 evaluates
+    # the first matching profile.
     local args="--port=${DIVERT_PORT}"
     [ -f "${LUA_LIB}" ]      && args="${args} --lua-init=@${LUA_LIB}"
     [ -f "${LUA_ANTIDPI}" ]  && args="${args} --lua-init=@${LUA_ANTIDPI}"
 
-    # TCP profile: HTTP/HTTPS only.
-    args="${args} --filter-tcp=${PORTS}"
-    [ -n "${HTTP_ARGS}" ]    && args="${args} ${HTTP_ARGS}"
-    [ -n "${HTTPS_ARGS}" ]   && args="${args} ${HTTPS_ARGS}"
-
     local hostlist_args=""
     local hostlist_noauto_args=""
+    local hostlist_exclude_args=""
 
     if [ "${HOSTLIST_MODE}" = "list" ] && [ -f "${HOSTLIST}" ] && [ -s "${HOSTLIST}" ]; then
         hostlist_args="${hostlist_args} --hostlist=${HOSTLIST}"
@@ -311,17 +1184,69 @@ start_service() {
     fi
 
     if [ -f "${HOSTLIST_EXCLUDE}" ] && [ -s "${HOSTLIST_EXCLUDE}" ]; then
-        hostlist_args="${hostlist_args} --hostlist-exclude=${HOSTLIST_EXCLUDE}"
-        hostlist_noauto_args="${hostlist_noauto_args} --hostlist-exclude=${HOSTLIST_EXCLUDE}"
+        hostlist_exclude_args=" --hostlist-exclude=${HOSTLIST_EXCLUDE}"
+        hostlist_args="${hostlist_args}${hostlist_exclude_args}"
+        hostlist_noauto_args="${hostlist_noauto_args}${hostlist_exclude_args}"
     fi
 
-    # Apply host filtering to the TCP profile.
+    local profile_started=0
+    build_custom_profile_args || {
+        echo "could not build custom profile arguments" >&2
+        exit 1
+    }
+    if [ -n "${CUSTOM_PROFILE_ARGS}" ]; then
+        args="${args}${CUSTOM_PROFILE_ARGS}"
+        profile_started=1
+    fi
+
+    # YouTube / Google TLS profile (TCP/443).
+    if [ "${YOUTUBE_TCP_ENABLED:-0}" = "1" ]; then
+        if [ "${profile_started}" = "1" ]; then
+            args="${args} --new"
+        fi
+        args="${args} --filter-tcp=443 --filter-l7=tls --hostlist=${YOUTUBE_HOSTLIST}${hostlist_exclude_args}${IPSET_ARGS} ${YOUTUBE_TCP_ARGS}"
+        profile_started=1
+    fi
+
+    # Discord's desktop/web TLS endpoints also use several non-standard ports.
+    if [ "${DISCORD_TCP_ENABLED:-0}" = "1" ]; then
+        if [ "${profile_started}" = "1" ]; then
+            args="${args} --new"
+        fi
+        args="${args} --filter-tcp=443,2053,2083,2087,2096,8443 --filter-l7=tls --hostlist=${DISCORD_HOSTLIST}${hostlist_exclude_args}${IPSET_ARGS} ${DISCORD_TCP_ARGS}"
+        profile_started=1
+    fi
+
+    # Keep the existing generic TCP strategy as the fallback. If a named
+    # profile was emitted first, start the fallback with --new.
+    if [ "${profile_started}" = "1" ]; then
+        args="${args} --new"
+    fi
+    args="${args} --filter-tcp=${PORTS}${IPSET_ARGS}"
+    [ -n "${HTTP_ARGS}" ]    && args="${args} ${HTTP_ARGS}"
+    [ -n "${HTTPS_ARGS}" ]   && args="${args} ${HTTPS_ARGS}"
     args="${args}${hostlist_args}"
 
-    # QUIC is a separate UDP profile. Auto-hostlist entries are used as a
-    # regular hostlist here, matching upstream <HOSTLIST_NOAUTO> semantics.
+    # Specific YouTube / Google QUIC profile must precede the generic QUIC
+    # strategy so that its per-domain strategy is selected first.
+    if [ "${YOUTUBE_QUIC_ENABLED:-0}" = "1" ]; then
+        args="${args} --new --filter-udp=443 --filter-l7=quic --hostlist=${YOUTUBE_HOSTLIST}${hostlist_exclude_args}${IPSET_ARGS} ${YOUTUBE_QUIC_ARGS}"
+    fi
+
+    # Generic QUIC is optional and keeps its historical behavior when set.
     if [ -n "${QUIC_ARGS}" ]; then
-        args="${args} --new --filter-udp=443 --filter-l7=quic${hostlist_noauto_args} ${QUIC_ARGS}"
+        args="${args} --new --filter-udp=443 --filter-l7=quic${hostlist_noauto_args}${IPSET_ARGS} ${QUIC_ARGS}"
+    fi
+
+    # Optional built-in Additional UDP profile is a fallback after custom
+    # profiles and named service profiles. Only a pure QUIC profile can use
+    # hostname hostlists; other UDP traffic should be scoped with IPSet.
+    if [ -n "${UDP_PORTS}" ]; then
+        local udp_hostlist_args=""
+        if [ "${UDP_FILTER_L7}" = "quic" ]; then
+            udp_hostlist_args="${hostlist_noauto_args}"
+        fi
+        args="${args} --new --filter-udp=${UDP_PORTS} --filter-l7=${UDP_FILTER_L7}${udp_hostlist_args}${IPSET_ARGS} ${UDP_ARGS}"
     fi
 
     [ -n "${EXTRA_ARGS}" ] && args="${args} ${EXTRA_ARGS}"
@@ -357,7 +1282,10 @@ start_service() {
         fi
     fi
 
-    install_ipfw_rules "${wan_dev}" || exit 1
+    if ! install_ipfw_rules "${wan_dev}"; then
+        stop_service
+        exit 1
+    fi
 
     # Start the safety watchdog under daemon(8) too. It probes a control URL
     # every minute and stops the service if 3 consecutive checks fail —
@@ -373,6 +1301,7 @@ start_service() {
             "${WATCHDOG_LOOP}"
     fi
 
+    STARTUP_IN_PROGRESS=0
     echo "zapret is running as pid $(cat ${PIDFILE}) (supervisor pid $(cat ${SUPERVISOR_PIDFILE}))"
 }
 
@@ -410,6 +1339,10 @@ stop_service() {
         rm -f "${PIDFILE}"
     fi
     killall dvtws2 2>/dev/null
+    cleanup_custom_profile_lists
+
+    STARTUP_IN_PROGRESS=0
+    ipfw_state_restore || return 1
 
     echo "zapret is not running (stopped)"
 }
@@ -432,7 +1365,12 @@ repair_service() {
         exit 0
     fi
 
-    validate_ipfw_rule_capacity || exit 1
+    if ! validate_ipfw_rule_capacity; then
+        # If the new config cannot be used, remove interception rules rather
+        # than leave traffic diverted to a stale profile.
+        remove_ipfw_rules
+        exit 1
+    fi
 
     # Repair is intended for events such as WAN DHCP/PPPoE renew where
     # OPNsense may disable or rebuild ipfw while dvtws2 itself keeps running.
@@ -473,6 +1411,26 @@ reconfigure_service() {
     fi
 }
 
+startup_failure_cleanup() {
+    _status=$?
+    [ "$STARTUP_IN_PROGRESS" = "1" ] || return "$_status"
+    STARTUP_IN_PROGRESS=0
+    remove_ipfw_rules
+    for _pidfile in "$WATCHDOG_SUPERVISOR_PIDFILE" "$WATCHDOG_PIDFILE" "$SUPERVISOR_PIDFILE" "$PIDFILE"; do
+        if [ -f "$_pidfile" ]; then
+            _pid=$(cat "$_pidfile" 2>/dev/null || true)
+            case "$_pid" in ""|*[!0-9]*) ;; *) kill "$_pid" 2>/dev/null || true ;; esac
+            rm -f "$_pidfile"
+        fi
+    done
+    cleanup_custom_profile_lists
+    if ! ipfw_state_restore; then
+        echo "startup rollback incomplete; inspect $IPFW_STATE_FILE before retrying" >&2
+    fi
+    return "$_status"
+}
+
+trap startup_failure_cleanup EXIT
 case "$1" in
     start)       start_service ;;
     stop)        stop_service ;;
