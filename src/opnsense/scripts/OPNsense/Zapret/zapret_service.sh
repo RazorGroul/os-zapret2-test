@@ -742,7 +742,7 @@ validate_custom_profiles() {
     CUSTOM_UDP_PORTS=""
     CUSTOM_PROFILE_ARGS=""
     CUSTOM_PROFILE_ACTIVE=0
-    cr=$(printf '\\r')
+    cr=$(printf '\015x'); cr=${cr%x}
 
     if [ -z "${JQ_BIN}" ] || [ ! -x "${JQ_BIN}" ]; then
         echo "jq is required to validate custom profiles" >&2
