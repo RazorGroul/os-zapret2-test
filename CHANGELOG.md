@@ -7,6 +7,8 @@ All notable changes to os-zapret2 are documented in this file.
 ### Fixed
 - Avoid attaching hostname hostlists to non-QUIC UDP profiles such as Discord voice/STUN, WireGuard, DHT, and unknown UDP flows that generally cannot provide a hostname for domain matching. Pure QUIC UDP profiles continue to inherit hostlist settings.
 - Reject TCP and UDP port values with more than five significant decimal digits before numeric comparisons, preventing oversized input from reaching shell integer tests.
+- Validate generated shell configuration before every service/diagnostic source operation, rejecting unsafe expansions, quotes, duplicate or unknown variables before any GUI-controlled value can be evaluated.
+- Cap TCP/UDP port specifications at 512 characters and each custom hostname include/exclude array at 256 entries.
 
 ### Added
 - Advanced JSON-defined custom profiles with ordering, transport/port filters, L7 selectors, per-profile hostname lists for TCP/pure QUIC, and per-profile IPSet selection.
